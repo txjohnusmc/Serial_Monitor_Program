@@ -1,0 +1,1724 @@
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+    1    1                      ;.pagewidth  120t
+    2    2                      ;*********************************************************************
+    3    3                      ;* Title:  S12SerMonxrx.asm        Copyright (c) Motorola 2003
+    4    4                      ;*********************************************************************
+    5    5                      ;* Author: Jim Sibigtroth - Motorola TSPG - 8/16 Bit Division
+    6    6                      ;* Author: Jim Williams - Motorola TSPG - 8/16 Bit Division
+    7    7                      ;*
+    8    8                      ;* Description: Bootloader/Monitor program for HCS9S12
+    9    9                      ;* bootloader will reside in 2K of block protected memory at the
+   10   10                      ;* end of the memory map of an HCS9S12 MCU ($F7FF-$FFFF).
+   11   11                      ;*
+   12   12                      ;* Since this code is located in the vector space, all interrupt
+   13   13                      ;* vectors will be mirrored to the pseudo vector table in user
+   14   14                      ;* erasable and reprogrammable flash memory just before the start
+   15   15                      ;* of the protected bootloader code.
+   16   16                      ;*
+   17   17                      ;* If a non-FFFF user reset vector is programmed into the
+   18   18                      ;* pseudo-reset vector, the bootloader will jump to that routine
+   19   19                      ;* so the user can control all options including write-once bits.
+   20   20                      ;*
+   21   21                      ;* This monitor program implements 23 primitive monitor commands that
+   22   22                      ;* are very similar to BDM commands. Third-party tool vendors can
+   23   23                      ;* adapt their existing BDM-based tools to work through a serial I/O
+   24   24                      ;* cable rather than a BDM pod, simply by providing a set of alternate
+   25   25                      ;* interface routines. Although this monitor approach has some
+   26   26                      ;* limitations compared to the BDM approach, it provides a free or
+   27   27                      ;* very low cost alternative for the most cost-sensitive users.
+   28   28                      ;*
+   29   29                      ;* This monitor uses SCI0 as the primary interface to the target MCU
+   30   30                      ;* system and SCI0 Rx interrupts are used to break out of a running
+   31   31                      ;* user program. This implies that some monitor functions will not be
+   32   32                      ;* available if the I bit in the CCR is not clear during execution of
+   33   33                      ;* the user's program. During debug of user initialization programs
+   34   34                      ;* and interrupt service routines when the I bit is not clear, trace
+   35   35                      ;* and breakpoint functions still work as expected because these
+   36   36                      ;* functions use on-chip breakpoint logic. 
+   37   37                      ;*
+   38   38                      ;*
+   39   39                      ;*
+   40   40                      ;* Revision History: not yet released
+   41   41                      ;* Rev #     Date      Who     Comments
+   42   42                      ;* -----  -----------  ------  ---------------------------------------
+   43   43                      ;*  2.00   04-SEP-03   JPW     First Release.
+   44   44                      ;*  2.01   03-DEC-03   JPW     MC9S12NE64 support added, fixed user jump table,
+   45   45                      ;*                             fixed PLL/Timer Ch.7 corruption 
+   46   46                      ;*                             Added Flash/EEPROM support > 12.8MHz OSC
+   47   47                      ;
+   48   48                      ;
+   49   49          0000 0116   softwareID1:  equ   $0116     ;Software revision (date)
+   50   50          0000 2004   softwareID2:  equ   $2004     ;Software revision (year)
+   51   51          0000 0201   softwareID3:  equ   $0201     ;Software revision (ver)
+   52   52                      
+   53   53                      ;*
+   54   54                      ;*
+   55   55                      ;*********************************************************************
+   56   56                      ;*********************************************************************
+   57   57                      ;* Motorola reserves the right to make changes without further notice
+   58   58                      ;* to any product herein to improve reliability, function, or design.
+   59   59                      ;* Motorola does not assume any liability arising out of the
+   60   60                      ;* application or use of any product, circuit, or software described
+   61   61                      ;* herein; neither does it convey any license under its patent rights
+   62   62                      ;* nor the rights of others.  Motorola products are not designed,
+   63   63                      ;* intended, or authorized for use as components in systems intended
+   64   64                      ;* for surgical implant into the body, or other applications intended
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+   65   65                      ;* to support life, or for any other application in which the failure
+   66   66                      ;* of the Motorola product could create a situation where personal
+   67   67                      ;* injury or death may occur.  Should Buyer purchase or use Motorola
+   68   68                      ;* products for any such intended or unauthorized application, Buyer
+   69   69                      ;* shall indemnify and hold Motorola and its officers, employees,
+   70   70                      ;* subsidiaries, affiliates, and distributors harmless against all
+   71   71                      ;* claims, costs, damages, and expenses, and reasonable attorney fees
+   72   72                      ;* arising out of, directly or indirectly, any claim of personal
+   73   73                      ;* injury or death associated with such unintended or unauthorized
+   74   74                      ;* use, even if such claim alleges that Motorola was negligent
+   75   75                      ;* regarding the design or manufacture of the part.
+   76   76                      ;*
+   77   77                      ;* Motorola is a registered trademark of Motorola, Inc.
+   78   78                      ;*********************************************************************
+   79   79                      
+   80   80                                  XDEF Startup         ;make symbol visible to the MW linker
+   81   81                      ;*********************************************************************
+   82   82                      ;* Include standard definitions that are common to all derivatives
+   83   83                      ;*********************************************************************
+   84   84                      ;             base    10           ;ensure default number base to decimal
+  602   89                      ;*********************************************************************
+  603   90                      ;* general equates for bootloader/monitor program valid for all
+  604   91                      ;* derivatives
+  605   92                      ;*********************************************************************
+  606   93          0000 F800   BootStart:   equ    $F800         ;start of protected boot block
+  607   94          0000 3FFF   RamLast:     equ    $3fff         ;last RAM location (all devices)
+  608   95          0000 8000   Window:      equ    $8000         ;PPAGE Window start
+  609   96          0000 4000   RomStart:    equ    $4000         ;start of flash
+  610   97          0000 0080   VecTabSize:  equ    $80           ;size of vector table
+  611   98          0000 FF80   VectorTable: equ    $10000-VecTabSize ;start of vector table
+  612   99          0000 F780   PVecTable:   equ    BootStart-VecTabSize ;start of pseudo vector table
+  613  100          0000 FF00   FProtStart:  equ    $FF00         ;start of FLASH protection/security
+  614  101          0000 00C7   FProtBlksz:  equ    $C7           ;protect code for boot block ($C7 2K)
+  615  102                      ;FProtBlksz:  equ    $FF           ;protect code for boot block (none)
+  616  103          0000 00BE   FSecure:     equ    $BE           ;Disable Security and backdoor access
+  617  104                      ;FSecure:     equ    $00           ;Enable Security and backdoor access
+  618  105                      
+  619  106          0000 5DC0   BusFreq:     equ    ((OscFreq/(initREFDV+1))*(initSYNR+1))
+  620  107          0000 000D   baud115200:  equ    (BusFreq/16)*10/1152  ;sets baud rate to 115,200
+  621  108          0000 05DC   longBreak:   equ    1500          ;delay time for >30-bit break
+  622  109                      ; make TxD low at least 300us (30 bits @ 115200 baud)
+  623  110                      ; 5~ * 42ns/~ * 1500 = 315us (not exact, just >30 bit times)
+  624  111          0000 000D   asciiCR:     equ    $0D           ;ascii carriage return
+  625  112                      
+  626  113          0000 00CA   flagReg:     equ    SCI0CR1       ;SCI control1 reg of SCI0
+  627  114          0000 0008   RunFlag:     equ    WAKE          ;SCI Wake bit used as run/mon flag
+  628  115          0000 0020   ArmFlag:     equ    RSRC          ;SCI RSRC bit used for ARM storage
+  629  116          0000 0004   TraceFlag:   equ    ILT           ;SCI Idle bit used as trace flag
+  630  117                      ; 1=SWI caused by return from Trace1; 0=SWI from breakpoint or DBG
+  631  118                      
+  632  119          0000 000C   initSCI0CR2: equ    $0C           ;SCI0 Control Register 2
+  633  120          0000 0080   traceOne:    equ    $80           ;BKPCT0 pattern for trace1 cmd
+  634  121                      ;
+  635  122                      ;CPU HCS12 CCR immediately after reset is:
+  636  123          0000 00D0   initUCcr:    equ    %11010000     ;initial value for user's CCR
+  637  124                      ;                    SX-I----     ;I interrupts masked
+  638  125                      								  ;(SXHINZVC=11x1xxxx).
+  639  126                      
+  640  127          0000 00E0   ErrNone:     equ    $E0           ;code for no errors
+  641  128          0000 00E1   ErrCmnd:     equ    $E1           ;command not recognized
+  642  129          0000 00E2   ErrRun:      equ    $E2           ;command not allowed in run mode
+  643  130          0000 00E3   ErrSP:       equ    $E3           ;SP was out of range
+  644  131          0000 00E4   ErrWriteSP:  equ    $E4           ;attempted to write bad SP value
+  645  132          0000 00E5   ErrByteNVM:  equ    $E5           ;write_byte attempt NVM
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+  646  133          0000 00E6   ErrFlash:    equ    $E6           ;FACCERR or FPVIOL error
+  647  134          0000 00E7   ErrFlErase:  equ    $E7           ;Error code not implemented
+  648  135          0000 00E8   ErrGoVec:    equ    $E8           ;Error code not implemented
+  649  136          0000 00E9   ErrEeErase   equ    $E9			  ;EACCERR or EPVIOL error
+  650  137                      
+  651  138          0000 0002   StatHalt:    equ    $02           ;stopped by Halt command
+  652  139          0000 0004   StatTrace:   equ    $04           ;returned from a Trace1 command
+  653  140          0000 0006   StatBreak:   equ    $06           ;Breakpoint or DBG (SWI) request
+  654  141          0000 0008   StatCold:    equ    $08           ;just did a cold reset
+  655  142          0000 000C   StatWarm:    equ    $0C           ;warm start because int with bad SP
+  656  143                      
+  657  144                      ;*********************************************************************
+  658  145                      ;* User CPU registers stack frame...
+  659  146                      ;*   +0  UCcr   <- Monitor's SP
+  660  147                      ;*   +1  UDreg   (B:A)
+  661  148                      ;*   +3  UXreg
+  662  149                      ;*   +5  UYreg
+  663  150                      ;*   +7  UPc
+  664  151                      ;*   +9  ---     <- User's SP
+  665  152                      ; Offsets from actual SP to user CPU regs while in monitor
+  666  153                      ;*********************************************************************
+  667  154                      
+  668  155          0000 0000   UCcr:        equ    0             ;user's CCR register
+  669  156          0000 0001   UDreg:       equ    1             ;user's D register (B:A)
+  670  157          0000 0003   UXreg:       equ    3             ;user's X register
+  671  158          0000 0005   UYreg:       equ    5             ;user's Y register
+  672  159          0000 0007   UPc:         equ    7             ;user's PC
+  673  160          0000 0009   SPOffset:    equ    9             ;offset of stack pointer while in monitor
+  674  161                      
+  675  162          0000 0023   MaxMonStack  equ   35             ;maximum number of bytes used by Monitor
+  676  163          0000 101A   LowSPLimit   equ   RamStart+MaxMonStack-SPOffset
+  677  164          0000 3FF7   HighSPLimit  equ   RamLast-SPOffset+1
+  678  165                      
+  679  166                      ; named locations on stack if SWI with bad SP value
+  680  167                      ;*********************************************************************
+  681  168                      ;* Start of code and/or constant data
+  682  169                      ;*********************************************************************
+  683  170                                   org    BootStart      ;beginning of protected flash
+  684  171                      ;*********************************************************************
+  685  172                      ;* Main startup program - real reset vector points to here
+  686  173                      ;*********************************************************************
+  687  174                      ;*********************************************************************
+  688  175                      ;  THIS LOCKS RAM / REGS / AND EEPROM BY USING ONLY WRITE USER CODE 
+  689  176                      ;  WILL NOT EFFECT THESE SETTINGS...This is for derivative compatibility
+  690  177                      ;  Please refer to EB388
+  691  178                      ;*********************************************************************
+  692  179                      ColdStart:  
+  693  180                      Startup:
+  694  181                      main:
+  695  182  a00F800 180B 0000                movb  #$00,INITRG    ;set registers at $0000 
+             00F804 11         
+  696  183  a00F805 180B 3900                movb  #$39,INITRM    ;set ram to end at $3fff 
+             00F809 10         
+  697  184  a00F80A 4F1C 3005                brclr  MEMSIZ0,eep_sw1+eep_sw0,ColdStart1  ;Check if device has EEprom
+  698  185  a00F80E 180B 0900                movb  #$09,INITEE    ;set eeprom to end at $0fff 
+             00F812 12         
+  699  186                                   
+  700  187  a00F813 87          ColdStart1:     clra                 ;A=0=cold start; see tsta @ ChkCold
+  701  188                      
+  702  189                      ;**********************************************************************
+  703  190                      ; Decide whether to go to user reset or bootloader/monitor
+  704  191                      ;**********************************************************************
+  705  192                      ;  (a) default to monitor if high byte user pseudo-vector is erased ($FF)
+  706  193                      ;**********************************************************************
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+  707  194  a00F814 F6F7 FE                  ldab   vector00-($10000-BootStart) ;check for user reset Vector
+  708  195  a00F817 51                       comb                 ;if erased COMB result will be 0
+  709  196  a00F818 2726                     beq    Monitor       ;default to monitor if no vector
+  710  197                      
+  711  198                      ;**********************************************************************
+  712  199                      ; Test the state of some  pins to force entering the monitor
+  713  200                      ;   Depending on the hardware configuration enable/disable/modify the
+  714  201                      ;   sections below
+  715  202                      ;**********************************************************************
+  716  203  a00F81A 4C0C 01                  bset   SwPullup,mSwPullup ;enable pullup on force monitor sw
+  717  204  a00F81D 1C02 4D01                bset   PPSS,PPSS0    ;enable pullup on RxD0 pin
+  718  205  a00F821 1C02 4C01                bset   PERS,PERS0    ;on RxD0 pin
+  719  206  a00F825 C7                       clrb
+  720  207  a00F826 0431 FD                  dbne   b,*           ;delay to allow sw pin to pull up
+  721  208                      ;**********************************************************************
+  722  209                      ;  (b) force monitor if SwPort bit SWITCH = 0 
+  723  210                      ;  Note: this port is configured after reset as input with pull-up
+  724  211                      ;  With no connection to this pin the monitor jumps to run mode
+  725  212                      ;**********************************************************************
+  726  213  a00F829 D600                     ldab   SwPort        ;get port value
+  727  214  a00F82B C540                     bitb   #Switch       ;test the sw bit
+  728  215  a00F82D 2711                     beq    Monitor
+  729  216                      
+  730  217                      ;**********************************************************************
+  731  218                      ;  (c) force monitor if RxD low (from host)  PORTS bit 0
+  732  219                      ;      This is true if the host holds RxD on break level
+  733  220                      ;  Note: this port is configured after reset as input with pull-up
+  734  221                      ;**********************************************************************
+  735  222  a00F82F 1F02 4801                brclr  PTS,PTS0,Monitor ;to monitor if RxD low
+             00F833 0C         
+  736  223  a00F834 1D02 4D01                bclr   PPSS,PPSS0    ;restore reset state on RxD0 pin
+  737  224  a00F838 1D02 4C01                bclr   PERS,PERS0    ;restore reset state on RxD1 pin
+  738  225                      
+  739  226                      ;**********************************************************************
+  740  227                      ;  finally jump to the user application (by pseudo vector)
+  741  228                      ;**********************************************************************
+  742  229  a00F83C 05FB xxxx                jmp    [vector00-($10000-BootStart),pcr] ;go where
+  743  230                                                              ;user reset vector points
+  744  231                      ;*********************************************************************
+  745  232                      ;  Formal start of Monitor code
+  746  233                      ;*********************************************************************
+  747  234                      Monitor:
+  748  235                      ; Initialize clock generator and PLL
+  749  236                      ;
+  750  237  a00F840 4D0C 01                  bclr    SwPullup,mSwPullup ;restore reset state
+  751  238  a00F843 4D39 80                  bclr    CLKSEL,PLLSEL      ;disengage PLL to system
+  752  239  a00F846 4C3A 40                  bset    PLLCTL,PLLON       ;turn on PLL
+  753  240  a00F849 180B 0200                movb    #initSYNR,SYNR     ;set PLL multiplier 
+             00F84D 34         
+  754  241  a00F84E 180B 0000                movb    #initREFDV,REFDV   ;set PLL divider
+             00F852 35         
+  755  242  a00F853 A7                       nop
+  756  243  a00F854 A7                       nop
+  757  244  a00F855 4F37 08FC                brclr   CRGFLG,LOCK,*+0    ;while (!(crg.crgflg.bit.lock==1))
+  758  245  a00F859 4C39 80                  bset    CLKSEL,PLLSEL      ;engage PLL to system
+  759  246                      ;
+  760  247                      ; set flash/EEPROM clock to 200 kHz
+  761  248                      ;
+  762  249          0000 0000     IF OscFreq >= 12800
+  765  252                        ELSE	
+  766  253  a00F85C 180B 2701                movb  #((OscFreq/200)-1),FCLKDIV ;Flash CLK = 200 kHz
+             00F860 00         
+  767  254  a00F861 180B 2701                movb  #((OscFreq/200)-1),ECLKDIV    ;Eeprom CLK = 200 kHz
+             00F865 10         
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+  768  255                        ENDIF
+  769  256                      ;
+  770  257                      ; Set stack pointer to last (highest) RAM location
+  771  258                      ;
+  772  259  a00F866 CF40 00     stackInit:   lds    #RamLast+1    ;point one past RAM
+  773  260                      
+  774  261                      ; Setup initial user CPU register values (user register stack frame)
+  775  262                      ;   A holds the initial state value
+  776  263  a00F869 FEF7 FE     initUregs:   ldx   BootStart-2    ;load user reset vector
+  777  264  a00F86C 34                       pshx                 ;$00 to user UPc      $3FFe
+  778  265  a00F86D CE00 00                  ldx   #$0000
+  779  266  a00F870 34                       pshx                 ;$00 to user UYreg    $3ffc
+  780  267  a00F871 34                       pshx                 ;$00 to user UXreg    $3ffa
+  781  268  a00F872 34                       pshx                 ;$00 to user UDreg    $3ff8
+  782  269  a00F873 C6D0                     ldab  #initUCcr      ;initial value for user CCR
+  783  270  a00F875 37                       pshb                 ;to UCcr              $3ff7
+  784  271                      
+  785  272                      ;
+  786  273                      ; set baud rate to 115.2 kbaud and turn on Rx and Tx
+  787  274                      ;
+  788  275  a00F876 180B 0D00                movb  #baud115200,SCI0BDL  ;..BDH=0 so baud = 115.2 K
+             00F87A C9         
+  789  276  a00F87B 180B 0C00                movb  #initSCI0CR2,SCI0CR2 ;Rx and Tx on
+             00F87F CB         
+  790  277                      ;
+  791  278                      ; if warm start, skip break. A is a flag to indicate cold vs warm start.
+  792  279                      ; Avoid using A above here *****
+  793  280                      ;
+  794  281  a00F880 97          ChkCold:     tsta                ;0=cold start, non-zero=warm start
+  795  282  a00F881 2709                     beq    coldBrk      ;if cold send break
+  796  283                      ;
+  797  284                      ; Send a warm start prompt and wait for new commands
+  798  285                      ;
+  799  286  a00F883 86E3                     ldaa  #ErrSP        ;error code for bad SP
+  800  287  a00F885 16FC 85                  jsr    PutChar      ;send error code (1st prompt char)
+  801  288  a00F888 860C                     ldaa  #StatWarm     ;status code for warm start
+  802  289  a00F88A 202F                     bra    EndPrompt    ;finish warm start prompt
+  803  290                      ;
+  804  291                      ; Cold start so Generate long break to host
+  805  292                      ;
+  806  293  a00F88C 4FCC 80FC   coldBrk:     brclr  SCI0SR1,TDRE,* ;wait for Tx (preamble) empty
+  807  294  a00F890 4CCB 01                  bset   SCI0CR2,SBK   ;start sending break after preamble
+  808  295  a00F893 CE05 DC                  ldx   #longBreak     ;at least 30 bit times for Windows
+  809  296  a00F896 8E00 00     BrkLoop:     cpx   #0             ;[2]done?
+  810  297  a00F899 0435 FA                  dbne   x,BrkLoop     ;[3]
+  811  298  a00F89C 4DCB 01                  bclr   SCI0CR2,SBK   ;stop sending breaks
+  812  299                      
+  813  300  a00F89F 16FC 7C     waitforCR:   jsr    GetChar       ;should be asciiCR or $00 with FE=1
+  814  301  a00F8A2 810D                     cmpa  #asciiCR       ;.eq. if 115.2K baud OK
+  815  302  a00F8A4 26F9                     bne    waitforCR
+  816  303                      
+  817  304                      ;*********************************************************************
+  818  305                      ;* end of reset initialization, begin body of program
+  819  306                      ;*********************************************************************
+  820  307                      ;
+  821  308                      ; Send a cold start prompt and wait for new commands
+  822  309                      ;
+  823  310  a00F8A6 86E0                     ldaa  #ErrNone       ;code for no errors ($E0)
+  824  311  a00F8A8 16FC 85                  jsr    PutChar       ;send error code (1st prompt char)
+  825  312  a00F8AB 8608                     ldaa  #StatCold      ;status code for cold start ($08)
+  826  313  a00F8AD 200C                     bra    EndPrompt     ;finish warm start prompt
+  827  314                      ;
+  828  315                      ; normal entry point after a good command
+  829  316                      ; Prompt is an alt entry point if an error occurred during a command
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+  830  317                      ; endPrompt is an alternate entry for Trace1, Break (SWI), Halt,
+  831  318                      ; or warm/cold resets so an alternate status value can be sent
+  832  319                      ; with the prompt
+  833  320                      ;
+  834  321                      
+  835  322  a00F8AF 86E0        CommandOK:   ldaa  #ErrNone       ;code for no errors ($E0)
+  836  323  a00F8B1 16FC 85     Prompt:      jsr    PutChar       ;send error code
+  837  324  a00F8B4 96CA                     ldaa   flagReg       ;0 means monitor active mode
+  838  325  a00F8B6 8408                     anda  #RunFlag       ;mask for run/monitor flag (SCI WAKE)
+  839  326  a00F8B8 44                       lsra                 ;shift flag to LSB
+  840  327  a00F8B9 44                       lsra                 ; for output as status
+  841  328  a00F8BA 44                       lsra                 ;$00=monitor active, $01=run
+  842  329  a00F8BB 16FC 85     EndPrompt:   jsr    PutChar       ;send status code
+  843  330  a00F8BE 863E                     ldaa  #'>'
+  844  331  a00F8C0 16FC 85                  jsr    PutChar       ;send 3rd character of prompt seq
+  845  332                                   
+  846  333                      ;test flagReg for run / DBG arm status.
+  847  334  a00F8C3 4FCA 080A                brclr  flagReg,RunFlag,Prompt1  ;no exit if run flag clr
+  848  335  a00F8C7 4FCA 2003                brclr  flagReg,ArmFlag,PromptRun  ;If DBG was not armed just run
+  849  336  a00F8CB 4C20 40                  bset	DBGC1,ARM	  ;re-arm DBG module
+  850  337  a00F8CE 06FC 61     PromptRun:   jmp    GoCmd         ;run mode so return to user program
+  851  338                      
+  852  339                      
+  853  340  a00F8D1 16FC 7C     Prompt1:     jsr    GetChar       ;get command code character
+  854  341  a00F8D4 CEF8 EA                  ldx   #commandTbl    ;point at first command entry
+  855  342  a00F8D7 A100        CmdLoop:     cmpa    ,x           ;does command match table entry?
+  856  343  a00F8D9 270B                     beq    DoCmd          ;branch if command found
+  857  344  a00F8DB 1A03                     leax   3,x
+  858  345  a00F8DD 8EF9 2F                  cpx   #tableEnd      ;see if past end of table
+  859  346  a00F8E0 26F5                     bne    CmdLoop       ;if not, try next entry
+  860  347  a00F8E2 86E1                     ldaa  #ErrCmnd       ;code for unrecognized command
+  861  348  a00F8E4 20CB                     bra    Prompt        ;back to prompt; command error
+  862  349                                   
+  863  350  a00F8E6 EE01        DoCmd:       ldx    1,x           ;get pointer to command routine
+  864  351  a00F8E8 0500                     jmp     ,x           ;go process command
+  865  352                      ;
+  866  353                      ; all commands except GO, Trace_1, and Reset to user code - jump to
+  867  354                      ; Prompt after done. Trace_1 returns indirectly via a SWI.
+  868  355                      ;
+  869  356                      ;*********************************************************************
+  870  357                      ;* Command table for bootloader/monitor commands
+  871  358                      ;*  each entry consists of an 8-bit command code + the address of the
+  872  359                      ;*  routine to be executed for that command.
+  873  360                      ;*********************************************************************
+  874  361  a00F8EA A1          commandTbl:  fcb   $A1
+  875  362  a00F8EB FAF4                     fdb  RdByteCmd     ;read byte
+  876  363  a00F8ED A2                       fcb   $A2
+  877  364  a00F8EE FB7F                     fdb  WtByteCmd     ;write byte
+  878  365  a00F8F0 A3                       fcb   $A3
+  879  366  a00F8F1 FAFF                     fdb  RdWordCmd     ;read word of data 
+  880  367  a00F8F3 A4                       fcb   $A4
+  881  368  a00F8F4 FB99                     fdb  WtWordCmd     ;write word of data 
+  882  369  a00F8F6 A5                       fcb   $A5
+  883  370  a00F8F7 FB6A                     fdb  RdNextCmd     ;read next word
+  884  371  a00F8F9 A6                       fcb   $A6
+  885  372  a00F8FA FBA1                     fdb  WtNextCmd     ;write next word
+  886  373  a00F8FC A7                       fcb   $A7
+  887  374  a00F8FD FB0F                     fdb  ReadCmd       ;read n bytes of data
+  888  375  a00F8FF A8                       fcb   $A8
+  889  376  a00F900 FB26                     fdb  WriteCmd      ;write n bytes of data
+  890  377  a00F902 A9                       fcb   $A9
+  891  378  a00F903 FBBF                     fdb  RdRegsCmd     ;read CPU registers
+  892  379  a00F905 AA                       fcb   $AA
+  893  380  a00F906 FC16                     fdb  WriteSpCmd    ;write SP
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+  894  381  a00F908 AB                       fcb   $AB
+  895  382  a00F909 FC0E                     fdb  WritePcCmd    ;write PC
+  896  383  a00F90B AC                       fcb   $AC
+  897  384  a00F90C FC06                     fdb  WriteIYCmd    ;write IY
+  898  385  a00F90E AD                       fcb   $AD
+  899  386  a00F90F FBFE                     fdb  WriteIXCmd    ;write IX
+  900  387  a00F911 AE                       fcb   $AE
+  901  388  a00F912 FBF0                     fdb  WriteDCmd     ;write D
+  902  389  a00F914 AF                       fcb   $AF
+  903  390  a00F915 FBE8                     fdb  WriteCcrCmd   ;write CCR
+  904  391  a00F917 B1                       fcb   $B1
+  905  392  a00F918 FC61                     fdb  GoCmd         ;go
+  906  393  a00F91A B2                       fcb   $B2
+  907  394  a00F91B FC39                     fdb  Trace1Cmd     ;trace 1
+  908  395  a00F91D B3                       fcb   $B3
+  909  396  a00F91E F943                     fdb  HaltCmd       ;halt
+  910  397  a00F920 B4                       fcb   $B4
+  911  398  a00F921 F97C                     fdb  ResetCmd      ;reset - to user vector or monitor
+  912  399                      ;            $B5 - Command not implemented
+  913  400  a00F923 B6                       fcb   $B6          ;code - erase flash command
+  914  401  a00F924 F9ED                     fdb  EraseAllCmd   ;erase all flash and eeprom command routine
+  915  402  a00F926 B7                       fcb   $B7          ;return device ID
+  916  403  a00F927 F92F                     fdb  DeviceCmd
+  917  404  a00F929 B8                       fcb   $B8          ;erase current flash bank selected in PPAGE
+  918  405  a00F92A FAA5                     fdb  ErsPage
+  919  406  a00F92C B9                       fcb   $B9			;Bulk erase eeprom if available
+  920  407  a00F92D F9BB                     fdb  EraseEECmd	;
+  921  408          0000 F92F   tableEnd:    equ    *           ;end of command table marker
+  922  409                      
+  923  410                      ;*********************************************************************
+  924  411                      ;* Device ID Command -  Ouputs hex word from device ID register
+  925  412                      ;*********************************************************************
+  926  413  a00F92F 86DC        DeviceCmd:   ldaa   #$DC         ;get part HCS12 descripter
+  927  414  a00F931 16FC 85                  jsr    PutChar      ;out to term
+  928  415  a00F934 961A                     ldaa   PARTIDH      ;get part ID high byte
+  929  416  a00F936 16FC 85                  jsr    PutChar      ;out to term
+  930  417  a00F939 961B                     ldaa   PARTIDL      ;get part ID low byte
+  931  418  a00F93B 16FC 85                  jsr    PutChar      ;out to term
+  932  419  a00F93E 86E0                     ldaa   #ErrNone     ;error code for no errors
+  933  420  a00F940 06F8 B1                  jmp    Prompt       ;ready for next command
+  934  421                      
+  935  422                      
+  936  423                      ;*********************************************************************
+  937  424                      ;* Halt Command - halts user application and enters Monitor
+  938  425                      ;*   This command is normally sent by the debugger while the user
+  939  426                      ;*   application is running. It changes the state variable in order
+  940  427                      ;*   to stay in the monitor
+  941  428                      ;*********************************************************************
+  942  429  a00F943 4DCA 08     HaltCmd:     bclr   flagReg,RunFlag ;run/mon flag = 0; monitor active
+  943  430  a00F946 86E0                     ldaa  #ErrNone        ;error code for no errors
+  944  431  a00F948 16FC 85                  jsr    PutChar        ;send error code
+  945  432  a00F94B 8602                     ldaa  #StatHalt       ;status code for Halt command
+  946  433  a00F94D 06F8 BB                  jmp    EndPrompt      ;send status and >
+  947  434                      ;*********************************************************************
+  948  435                      ;* Halt or continue user code by Rx interrupt of SCI. User code will 
+  949  436                      ;* continue if Run load switch is in run position and a resonable
+  950  437                      ;* Sci user vector is found.
+  951  438                      ;*********************************************************************
+  952  439  a00F950 4F20 4006   SciIsr:      brclr  DBGC1,ARM,SciIsr1 ;Arm not set so continue
+  953  440                      									 ;above must be brclr as COF will be
+  954  441                      									 ;Stored in trace buffer
+  955  442  a00F954 4CCA 20     			 bset   flagReg,ArmFlag  ;Save ARM flag
+  956  443  a00F957 4D20 40                  bclr   DBGC1,ARM        ;Arm bit in Dbgc1 cleared to stop DBG
+  957  444  a00F95A 4C0C 01     SciIsr1:     bset   SwPullup,mSwPullup ;enable pullup on monitor sw
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+  958  445  a00F95D 4CCA 08                  bset   flagReg,RunFlag  ;set run/mon flag (run mode)
+  959  446  a00F960 C600        			 ldab  #AllowSci0		 ; defined in the .def file
+  960  447  a00F962 C101        			 cmpb  #$01				 ; is it set?
+  961  448  a00F964 2610        			 bne    SciIsrExit       ; if AllowSci0 is set
+  962  449                      									 ; Test run switch to allow user
+  963  450                      									 ; Sci0 function to run
+  964  451                      ;**********************************************************************
+  965  452                      ;*  Force monitor if SwPort bit SWITCH = 0 
+  966  453                      ;*  Note: this port is configured after reset as input with pull-up
+  967  454                      ;*   if this pin in not connect sci0 will be directed to user sci0
+  968  455                      ;**********************************************************************
+  969  456  a00F966 D600                     ldab   SwPort           ;get port value
+  970  457  a00F968 C540                     bitb   #Switch          ;test the sw bit
+  971  458  a00F96A 270A                     beq    SciIsrExit
+  972  459                      ;*********************************************************************
+  973  460                      ;* This routine checks for an unprogrammed SCI0 user interrupt
+  974  461                      ;* vector and returns to monitor if execution of an unprogrammed
+  975  462                      ;* user SCI0 vector is attempted
+  976  463                      ;*********************************************************************
+  977  464  a00F96C FDF7 D6     			 ldy	 $F000+(vector20-BootStart) ; Get user SCI vector
+  978  465  a00F96F 8DFF FF                  cpy     #$FFFF			 ;is it programmed?	
+  979  466  a00F972 2702                     beq     SciIsrExit		 ; if not exit
+  980  467  a00F974 0540                     jmp     0,Y			 ;if programmed the go there.
+  981  468                      
+  982  469  a00F976 4D0C 01     SciIsrExit:  bclr    SwPullup,mSwPullup ;restore reset state
+  983  470  a00F979 06F8 D1                  jmp     Prompt1
+  984  471                      ;* unlike most ISRs, this one does not end in an RTI. If/when we
+  985  472                      ;* return to running the user program, we will re-enable Rx interrupts
+  986  473                      
+  987  474                      ;*********************************************************************
+  988  475                      ;* Reset Command - forces a reset - if user pseudo-vector is not blank
+  989  476                      ;*  (or some other conditions are met - see ColdStart:) processing will
+  990  477                      ;*  start at the user-specified reset pseudo-vector location and the
+  991  478                      ;*  user has full control of all write-once registers. Otherwise reset
+  992  479                      ;*  causes the bootloader/monitor program to cold start.
+  993  480                      ;*********************************************************************
+  994  481  a00F97C 8641        ResetCmd:     ldaa  #RSBCK|!CR2|!CR1|CR0 ;Cop disabled in BDM
+  995  482  a00F97E 5A3C                      staa   COPCTL        ; turn on cop monitor
+  996  483  a00F980 913C                      cmpa   COPCTL        ; load to see if user touched it
+  997  484  a00F982 2703                      beq    CopLock       ; wait for COP reset
+  998  485  a00F984 06F8 00                   jmp    ColdStart     ; can't use COP just start over
+  999  486  a00F987 1410        CopLock:      orcc  #$10           ; disable interrupts
+ 1000  487  a00F989 20FE                      bra	 *
+ 1001  488                      
+ 1002  489                      ;*********************************************************************
+ 1003  490                      ;* SWI service routine - trace1 or breakpoint from user code
+ 1004  491                      ;*  SWI saves user CPU registers on stack and returns to monitor
+ 1005  492                      ;*  control at a new command prompt.
+ 1006  493                      ;*  User CPU registers stack frame...
+ 1007  494                      ;*
+ 1008  495                      ;*   +0  UCcr   <- SP after SWI stacking and on entry to this ISR
+ 1009  496                      ;*   +1  UDreg   (B:A)
+ 1010  497                      ;*   +3  UXreg
+ 1011  498                      ;*   +5  UYreg
+ 1012  499                      ;*   +7  UPc
+ 1013  500                      ;*   +9  ---     <- User's SP
+ 1014  501                      ;*********************************************************************
+ 1015  502  a00F98B 7900 28     Breakpoint:  clr    DBGC2            ;Bkpct0 cleared to disabled
+ 1016  503  a00F98E 7900 20                  clr    DBGC1            ;Dbgc1 cleared to disarm DBG
+ 1017  504  a00F991 4DCA 08                  bclr   flagReg,RunFlag  ;run/mon flag = monitor active
+ 1018  505  a00F994 C604                     ldab   #StatTrace     ;set status to Trace (SWI) -> B
+ 1019  506                                                         ;and enter monitor
+ 1020  507                      
+ 1021  508                      ;*********************************************************************
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1022  509                      ;* This is the entrypoint to the monitor from the user application
+ 1023  510                      ;*   A contains the status value that reflects run status
+ 1024  511                      ;*
+ 1025  512                      ;* If SP isn't within valid RAM, it can't support the monitor so the
+ 1026  513                      ;* monitor is forced to initialize the SP and user registers.
+ 1027  514                      ;*********************************************************************
+ 1028  515                      ReenterMon:  
+ 1029  516  a00F996 8F10 1B     			 cps   #LowSPLimit+1  ;check against lower limit
+ 1030  517  a00F999 2518                     blo    badSP         ; note: +1 => A is not pushed yet
+ 1031  518  a00F99B 8F3F F8                  cps   #HighSPLimit+1 ;check against upper limit
+ 1032  519  a00F99E 2213                     bhi    badSP
+ 1033  520  a00F9A0 86E0                     ldaa  #ErrNone       ;error code for no errors
+ 1034  521  a00F9A2 16FC 85                  jsr    PutChar       ;send error code
+ 1035  522  a00F9A5 180F                     tba                  ;status code from B to A
+ 1036  523  a00F9A7 4FCA 0405                brclr  flagReg,TraceFlag,SWIdone  ;0 indicates not Trace
+ 1037  524  a00F9AB 4DCA 04                  bclr   flagReg,TraceFlag  ;acknowledge trace flag
+ 1038  525  a00F9AE 8604                     ldaa  #StatTrace     ;status code for Trace1 return
+ 1039  526  a00F9B0 06F8 BB     SWIdone:     jmp    EndPrompt     ;send status and >
+ 1040  527  a00F9B3 86E3        badSP:       ldaa  #ErrSP         ;set error code to bad stack pointer
+ 1041  528  a00F9B5 06F8 66                  jmp    stackInit
+ 1042  529  a00F9B8 4DCA 20                  bclr   flagReg,ArmFlag  ;Save ARM flag
+ 1043  530                      
+ 1044  531                      ;*********************************************************************
+ 1045  532                      ;* Erase EE Command -  mass
+ 1046  533                      ;*  erase all EEPROM locations
+ 1047  534                      ;*
+ 1048  535                      ;* Eeprom erasure assumes no protection. (Mass command will fail)
+ 1049  536                      ;*********************************************************************
+ 1050  537  a00F9BB 16FD 2D     EraseEECmd:  jsr    abClr         ;abort commands and clear errors
+ 1051  538                      
+ 1052  539  a00F9BE 4F1C 3026                brclr  MEMSIZ0,eep_sw1+eep_sw0,ErsPageErr1  ;Check if device has EEprom
+ 1053  540  a00F9C2 CD04 00                  ldy   #EEpromStart   ; get device eeprom start
+ 1054  541  a00F9C5 6C40                     std    0,y           ; write to eeprom (latch address)
+ 1055  542                                                        ; data is don't care (but needed)
+ 1056  543                      
+ 1057  544  a00F9C7 180B 4101                movb  #$41,ECMD      ;mass erase command
+             00F9CB 16         
+ 1058  545  a00F9CC 180B 8001                movb  #CBEIF,ESTAT   ;register the command
+             00F9D0 15         
+ 1059  546  a00F9D1 A7                       nop                  ; wait a few cycles for
+ 1060  547  a00F9D2 A7                       nop                  ; command to sync.
+ 1061  548  a00F9D3 A7                       nop
+ 1062  549  a00F9D4 B601 15     ChkDoneE:    ldaa   ESTAT         ;wait for CBEIF=CCIF=1 (cmnd done)
+ 1063  550  a00F9D7 2AFB                     bpl    ChkDoneE      ;loop if command buffer full (busy)
+ 1064  551  a00F9D9 48                       asla                 ;moves CCIF to MSB (set/clear N bit)
+ 1065  552  a00F9DA 2AF8                     bpl    ChkDoneE      ;loop if CCIF=0 (not done)
+ 1066  553  a00F9DC B601 05                  ldaa   FSTAT
+ 1067  554  a00F9DF 8430                     anda  #$30           ;mask all but PVIOL or ACCERR
+ 1068  555  a00F9E1 2605                     bne    ErsPageErr1   ;back to prompt-flash error
+ 1069  556  a00F9E3 86E0                     ldaa   #ErrNone      ;code for no errors ($E0)
+ 1070  557  a00F9E5 06F8 B1                  jmp    Prompt        ;ready for next command
+ 1071  558                      
+ 1072  559  a00F9E8 86E9        ErsPageErr1: ldaa   #ErrEeErase   ;Erase error code ($E9)
+ 1073  560  a00F9EA 06F8 B1                  jmp    Prompt        ;ready for next command
+ 1074  561                      
+ 1075  562                      ;*********************************************************************
+ 1076  563                      ;* Erase Command - Use repeated page erase commands to erase all flash
+ 1077  564                      ;*  except bootloader in protected block at the end of flash, and mass
+ 1078  565                      ;*  erase all EEPROM locations
+ 1079  566                      ;*
+ 1080  567                      ;* Eeprom erasure assumes no protection. (Mass command will fail)
+ 1081  568                      ;*********************************************************************
+ 1082  569  a00F9ED 16FD 2D     EraseAllCmd: jsr    abClr         ;abort commands and clear errors
+ 1083  570                      
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1084  571  a00F9F0 4F1C 301A                brclr  MEMSIZ0,eep_sw1+eep_sw0,ErsBlk0  ;Check if device has EEprom
+ 1085  572  a00F9F4 CD04 00                  ldy   #EEpromStart   ; get device eeprom start
+ 1086  573  a00F9F7 6C40                     std    0,y           ; write to eeprom (latch address)
+ 1087  574                                                        ; data is don't care (but needed)
+ 1088  575                      
+ 1089  576  a00F9F9 180B 4101                movb  #MassErase,ECMD      ;mass erase command
+             00F9FD 16         
+ 1090  577  a00F9FE 180B 8001                movb  #CBEIF,ESTAT   ;register the command
+             00FA02 15         
+ 1091  578  a00FA03 A7                       nop                  ; wait a few cycles for
+ 1092  579  a00FA04 A7                       nop                  ; command to sync.
+ 1093  580  a00FA05 A7                       nop
+ 1094  581  a00FA06 B601 15     ChkDoneE1:   ldaa   ESTAT         ;wait for CBEIF=CCIF=1 (cmnd done)
+ 1095  582  a00FA09 2AFB                     bpl    ChkDoneE1     ;loop if command buffer full (busy)
+ 1096  583  a00FA0B 48                       asla                 ;moves CCIF to MSB (set/clear N bit)
+ 1097  584  a00FA0C 2AF8                     bpl    ChkDoneE1     ;loop if CCIF=0 (not done)
+ 1098  585                      ;
+ 1099  586                      ; erase flash pages from RomStart to start of protected bootloader
+ 1100  587                      ; no need to check for errors because we cleared them before EE erase
+ 1101  588                      ;
+ 1102  589                      
+ 1103  590                      ErsBlk0:                          ; sector erase all full blocks
+ 1104  591  a00FA0E C604                     ldab   #PagesBlk     ; Get number of banks/blocks
+ 1105  592  a00FA10 53                       decb                 ; erase all but last
+ 1106  593  a00FA11 6BAF                     stab   1,-sp         ; save counter
+ 1107  594  a00FA13 863F                     ldaa   #$3f          ; highest bank
+ 1108  595  a00FA15 1816                     sba                  ; Compute lowest page-1
+ 1109  596  a00FA17 5A30                     staa   PPAGE         ; PPAGE for first 16K page of block 0
+ 1110  597                                                        ; (passed in the A accumulator).
+ 1111  598  a00FA19 7901 03                  clr    FCNFG         ; set block select bits to 0.
+ 1112  599  a00FA1C CE02 00     ErsBlk0Lp:   ldx    #SectorSize   ; select sector size
+ 1113  600  a00FA1F CC40 00                  ldd    #$4000        ; Window size
+ 1114  601  a00FA22 1810                     idiv                 ; compute total number of sectors
+ 1115  602  a00FA24 B754                     tfr    x,d           ; get number of sectors in B
+ 1116  603  a00FA26 CE80 00                  ldx   #Window        ; point to the start of the PPAGE window.
+ 1117  604  a00FA29 0760                     bsr    ErsSectors    ; go erase the PPAGE window a sector at a time.
+ 1118  605  a00FA2B 7200 30                  inc    PPAGE         ; go to the next PPAGE.
+ 1119  606  a00FA2E 6380                     dec    0,sp          ; done with all full PPAGE blocks?
+ 1120  607  a00FA30 26EA                     bne    ErsBlk0Lp     ;   no? then erase more blocks.
+ 1121  608                      
+ 1122  609  a00FA32 CE02 00                  ldx    #SectorSize   ; select sector size
+ 1123  610  a00FA35 CC38 00                  ldd    #((BootStart-$c000)) ; get size - protected amount
+ 1124  611  a00FA38 1810                     idiv                 ; compute total number of sectors
+ 1125  612                                                        ; minus the bootblock.
+ 1126  613  a00FA3A B754                     tfr    x,d           ; get number of sectors in B
+ 1127  614  a00FA3C CE80 00                  ldx   #Window        ; point to the start of the PPAGE window.
+ 1128  615  a00FA3F 074A                     bsr    ErsSectors    ; go erase the PPAGE window a sector at a time.
+ 1129  616  a00FA41 33                       pulb                 ; remove the page count from the stack.
+ 1130  617                      
+ 1131  618                      ; erase all sectors outside the bootblock.
+ 1132  619                      ;
+ 1133  620                      ;********************************************************************
+ 1134  621                      ;bulk erase all the rest
+ 1135  622                      ;********************************************************************
+ 1136  623                      
+ 1137  624  a00FA42 C604                     ldab  #FlashBlks    ; select lowest page of the highest bank
+ 1138  625  a00FA44 53                       decb                 ;
+ 1139  626  a00FA45 271F                     beq    EraseDone     ; if single block device quit
+ 1140  627  a00FA47 C630                     ldab  #LowestPage    ; select lowest bank
+ 1141  628  a00FA49 5B30        BlockLoop:   stab   PPAGE         ; must match array selection
+ 1142  629  a00FA4B 54                       lsrb                 ; calculate the value of the block select bits based
+ 1143  630  a00FA4C 54                       lsrb                 ; on bits 3:2 of the PPAGE register value. (<256k)
+ 1144  631  a00FA4D CD02 00                  ldy   #SectorSize    ; get high byte of size
+ 1145  632  a00FA50 8D02 00                  cpy   #$0200         ; if larger than $200 shift again
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1146  633  a00FA53 2701                     beq    nBlockLoop    ; otherwise skip ahead
+ 1147  634  a00FA55 54                       lsrb                 ; on bits 4:3 of the PPAGE register value. (512k)
+ 1148  635  a00FA56 51          nBlockLoop:  comb
+ 1149  636  a00FA57 C403                     andb  #$03           ; mask off all but the lower 2 bits.
+ 1150  637  a00FA59 7B01 03                  stab   FCNFG         ; select the block to erase.
+ 1151  638  a00FA5C 0710                     bsr    BulkErase     ; erase it
+ 1152  639  a00FA5E D630                     ldab   PPAGE         ;get ppage back
+ 1153  640  a00FA60 CB04                     addb  #PagesBlk      ;
+ 1154  641  a00FA62 C13B                     cmpb  #($3F-PagesBlk) ; see if last block
+ 1155  642  a00FA64 2BE3                     bmi    BlockLoop
+ 1156  643                      
+ 1157  644  a00FA66 180B 3D00   EraseDone:   movb  #$3D,PPAGE     ;select bank in array0
+             00FA6A 30         
+ 1158  645                      
+ 1159  646  a00FA6B 06F8 AF     OkCommand:   jmp    CommandOK     ;back to no error and prompt
+ 1160  647                      
+ 1161  648  a00FA6E 34          BulkErase:   pshx                 ;save address
+ 1162  649  a00FA6F CE80 00                  ldx    #Window       ;must point into bank
+ 1163  650  a00FA72 6A00                     staa   ,x            ;latch address to erase
+ 1164  651  a00FA74 180B 4101                movb  #MassErase,FCMD      ; Select mass erase
+             00FA78 06         
+ 1165  652  a00FA79 180B 8001                movb  #CBEIF,FSTAT   ;register the command
+             00FA7D 05         
+ 1166  653  a00FA7E A7                       nop                  ;wait a few cycles for
+ 1167  654  a00FA7F A7                       nop                  ;command to sync.
+ 1168  655  a00FA80 A7                       nop
+ 1169  656  a00FA81 B601 05     ChkDoneF:    ldaa   FSTAT         ;wait for CBEIF=CCIF=1 (cmnd done)
+ 1170  657  a00FA84 2AFB                     bpl    ChkDoneF      ;loop if command buffer full (busy)
+ 1171  658  a00FA86 48                       asla                 ;moves CCIF to MSB (set/clear N bit)
+ 1172  659  a00FA87 2AF8                     bpl    ChkDoneF      ;loop if CCIF=0 (not done)
+ 1173  660  a00FA89 30                       pulx                 ;get address back
+ 1174  661  a00FA8A 3D                       rts
+ 1175  662                      ;Erase 'b' (accumulator) sectors beginning at address 'x' (index register)
+ 1176  663                      ;
+ 1177  664  a00FA8B B796        ErsSectors:  exg    b,y           ;put the sector count in y.
+ 1178  665  a00FA8D 6C00        ErsSectLp:   std    ,x
+ 1179  666  a00FA8F 180B 4001                movb  #SecErase,FCMD ;perform a sector erase.
+             00FA93 06         
+ 1180  667  a00FA94 16FD 7F                  jsr    DoOnStack     ;finish command from stack-based sub
+ 1181  668  a00FA97 97                       tsta                 ;check for 0=OK
+ 1182  669  a00FA98 2608                     bne    ErsSectErr    ;back to prompt-flash erase error
+ 1183  670  a00FA9A 1AE2 0200                leax   SectorSize,x  ;point to the next sector.
+ 1184  671  a00FA9E 0436 EC                  dbne   y,ErsSectLp   ;continue to erase remaining sectors.
+ 1185  672  a00FAA1 3D                       rts
+ 1186  673                      
+ 1187  674  a00FAA2 3A          ErsSectErr:  puld                 ; clear stack
+ 1188  675  a00FAA3 204A                     bra    ErsPageErr
+ 1189  676                      
+ 1190  677  a00FAA5 16FD 2D     ErsPage:     jsr    abClr         ; abort commands and clear errors
+ 1191  678  a00FAA8 D630        	         ldab   PPAGE         ; get current ppage
+ 1192  679                      
+ 1193  680  a00FAAA 54                       lsrb                 ; calculate the value of the block select bits based
+ 1194  681  a00FAAB 54                       lsrb                 ; on bits 3:2 of the PPAGE register value. (<256k)
+ 1195  682  a00FAAC CD02 00                  ldy   #SectorSize    ; get high byte of size
+ 1196  683  a00FAAF 8D02 00                  cpy   #$0200         ; if larger than $200 shift again
+ 1197  684  a00FAB2 2701                     beq    ErsPage1      ; otherwise skip ahead
+ 1198  685  a00FAB4 54                       lsrb                 ; on bits 4:3 of the PPAGE register value. (512k)
+ 1199  686  a00FAB5 51          ErsPage1:    comb
+ 1200  687  a00FAB6 C403                     andb  #$03           ; mask off all but the lower 2 bits.
+ 1201  688  a00FAB8 7B01 03                  stab   FCNFG         ; select the block to erase.
+ 1202  689  a00FABB D630                     ldab   PPAGE         ; get current ppage
+ 1203  690  a00FABD C13F                     cmpb  #$3F		      ; is it the page with the monitor
+ 1204  691  a00FABF 2611                     bne   ErsFullPage    ; no then erase all of page
+ 1205  692  a00FAC1 CE02 00                  ldx   #SectorSize    ; select sector size
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1206  693  a00FAC4 CC38 00                  ldd   #((BootStart-$c000)) ; get size - protected amount
+ 1207  694  a00FAC7 1810                     idiv                 ; compute total number of sectors
+ 1208  695                                                        ; minus the bootblock.
+ 1209  696  a00FAC9 B754                     tfr    x,d           ; get number of sectors in B
+ 1210  697  a00FACB CE80 00                  ldx   #Window        ; point to the start of the PPAGE window.
+ 1211  698  a00FACE 07BB                     bsr    ErsSectors    ; go erase the PPAGE window a sector at a time.
+ 1212  699  a00FAD0 2011                     bra    EraPageStat   ; back to no error and prompt
+ 1213  700                      
+ 1214  701  a00FAD2 CE02 00     ErsFullPage: ldx   #SectorSize    ; select sector size
+ 1215  702  a00FAD5 CC40 00                  ldd   #$4000         ; Window size
+ 1216  703  a00FAD8 1810                     idiv                 ; compute total number of sectors
+ 1217  704  a00FADA B754                     tfr    x,d           ; get number of sectors in B
+ 1218  705  a00FADC CE80 00                  ldx   #Window        ; point to the start of the PPAGE window.
+ 1219  706  a00FADF 07AA                     bsr    ErsSectors    ; go erase the PPAGE window a sector at a time.
+ 1220  707  a00FAE1 2000                     bra    EraPageStat     ;back to no error and prompt
+ 1221  708                      
+ 1222  709  a00FAE3 B601 05     EraPageStat: ldaa   FSTAT
+ 1223  710  a00FAE6 8430                     anda  #$30           ;mask all but PVIOL or ACCERR
+ 1224  711  a00FAE8 2605                     bne    ErsPageErr    ;back to prompt-flash error
+ 1225  712  a00FAEA 86E0                     ldaa   #ErrNone      ;code for no errors ($E0)
+ 1226  713  a00FAEC 06F8 B1                  jmp    Prompt        ;ready for next command
+ 1227  714                      
+ 1228  715  a00FAEF 86E6        ErsPageErr: ldaa   #ErrFlash      ;code for Flash error ($E6)
+ 1229  716  a00FAF1 06F8 B1                  jmp    Prompt        ;ready for next command
+ 1230  717                      
+ 1231  718                      ;*********************************************************************
+ 1232  719                      ;* Read Byte Command - read specified address and return the data
+ 1233  720                      ;*  8-bit command code from host to SCI0 RxD
+ 1234  721                      ;*  16-bit address (high byte first) from host to SCI0 RxD
+ 1235  722                      ;*  8-bit data sent back to host through SCI0 TxD
+ 1236  723                      ;*********************************************************************
+ 1237  724  a00FAF4 16FC 71     RdByteCmd:   jsr    getX          ;get address to read from
+ 1238  725  a00FAF7 A600                     ldaa   ,x            ;read the requested location
+ 1239  726  a00FAF9 16FC 85                  jsr    PutChar       ;send it out SCI0
+ 1240  727  a00FAFC 06F8 AF                  jmp    CommandOK     ;ready for next command
+ 1241  728                      
+ 1242  729                      ;*********************************************************************
+ 1243  730                      ;* Read Word Command - read specified block of data
+ 1244  731                      ;*  8-bit command code from host to SCI0 RxD
+ 1245  732                      ;*  16-bit address (high byte first) from host to SCI0 RxD
+ 1246  733                      ;*  16-bit number sent back to host through SCI0 TxD
+ 1247  734                      ;* Special case of block read.
+ 1248  735                      ;*********************************************************************
+ 1249  736  a00FAFF 16FC 71     RdWordCmd:   jsr    getX          ;get address to read from
+ 1250  737  a00FB02 EC00        sendExit:    ldd    ,x            ;read the requested location
+ 1251  738  a00FB04 16FC 85                  jsr    PutChar       ;send it out SCI0
+ 1252  739  a00FB07 180F                     tba
+ 1253  740  a00FB09 16FC 85                  jsr    PutChar       ;send it out SCI0
+ 1254  741  a00FB0C 06F8 AF                  jmp    CommandOK     ;ready for next command
+ 1255  742                                   
+ 1256  743                      ;*********************************************************************
+ 1257  744                      ;* Read Command - read specified block of data
+ 1258  745                      ;*  8-bit command code from host to SCI0 RxD
+ 1259  746                      ;*  16-bit address (high byte first) from host to SCI0 RxD
+ 1260  747                      ;*  8-bit number of bytes-1 to sent back to host through SCI0 TxD
+ 1261  748                      ;*********************************************************************
+ 1262  749  a00FB0F 16FC 71     ReadCmd:     jsr    getX          ;get address to read from
+ 1263  750  a00FB12 16FC 7C                  jsr    GetChar       ;get number of bytes to read
+ 1264  751  a00FB15 180E                     tab
+ 1265  752  a00FB17 52                       incb                 ;correct counter (0 is actually 1)
+ 1266  753  a00FB18 A600        ReadNext:    ldaa   ,x            ;read the requested location
+ 1267  754  a00FB1A 16FC 85     			 jsr    PutChar       ;send it out SCI0
+ 1268  755  a00FB1D 08                       inx
+ 1269  756  a00FB1E 53                       decb   
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1270  757  a00FB1F 26F7                     bne    ReadNext             
+ 1271  758  a00FB21 86E0                     ldaa  #ErrNone       ;code for no errors ($E0)
+ 1272  759  a00FB23 06F8 B1     xPrompt:     jmp    Prompt        ;ready for next command
+ 1273  760                      
+ 1274  761                      ;*********************************************************************
+ 1275  762                      ;* Write Command - write specified block of data
+ 1276  763                      ;*  8-bit command code from host to SCI0 RxD
+ 1277  764                      ;*  16-bit address (high byte first) from host to SCI0 RxD
+ 1278  765                      ;*  8-bit number of bytes-1 to write from host to SCI0 TxD
+ 1279  766                      ;*  8-bit values to write
+ 1280  767                      ;* this function used Word writes whenever possible. This is:
+ 1281  768                      ;* a) when more than one byte is still to write
+ 1282  769                      ;* b) and the address is even
+ 1283  770                      ;*********************************************************************
+ 1284  771  a00FB26 16FC 71     WriteCmd:    jsr    getX          ;get address to write to
+ 1285  772  a00FB29 16FC 7C                  jsr    GetChar       ;get number of bytes to read
+ 1286  773  a00FB2C 180E                     tab
+ 1287  774  a00FB2E 52                       incb                 ;correct counter (0 is actually 1)
+ 1288  775  a00FB2F C101        WriteNext:   cmpb   #1            ;if only one byte left
+ 1289  776  a00FB31 37                       pshb                 ;preserve byte counter
+ 1290  777  a00FB32 271B                     beq    WriteByte     ;write it 
+ 1291  778  a00FB34 B750                     tfr    x,a           ;is address odd
+ 1292  779  a00FB36 8501                     bita   #1
+ 1293  780  a00FB38 2615                     bne    WriteByte     ;write a byte first
+ 1294  781                                   
+ 1295  782  a00FB3A 16FC 7C     WriteWord:   jsr    GetChar       ;get high byte
+ 1296  783  a00FB3D 180E                     tab                  ;save in B
+ 1297  784  a00FB3F 6380                     dec    ,sp           ;decrement byte counter (on stack)
+ 1298  785  a00FB41 16FC 7C                  jsr    GetChar       ;get low byte
+ 1299  786  a00FB44 B781                     exg    a,b           ;flip high and low byte
+ 1300  787  a00FB46 16FC BB                  jsr    WriteD2IX     ;write or program data to address
+ 1301  788  a00FB49 33                       pulb                 ;restore byte counter                
+ 1302  789  a00FB4A 2617                     bne    WriteError    ;error detected
+ 1303  790  a00FB4C 08                       inx                  ;increment target address
+ 1304  791  a00FB4D 2009                     bra    Write1         
+ 1305  792                      
+ 1306  793  a00FB4F 16FC 7C     WriteByte:   jsr    GetChar       ;get data to write
+ 1307  794  a00FB52 16FC DD                  jsr    WriteA2IX     ;write or program data to address
+ 1308  795  a00FB55 33                       pulb                 ;restore byte counter       
+ 1309  796  a00FB56 260B                     bne    WriteError    ;error detected
+ 1310  797  a00FB58 08          Write1:      inx                  ;increment target address
+ 1311  798  a00FB59 53                       decb                 ;decrement byte counter 
+ 1312  799  a00FB5A 26D3                     bne    WriteNext
+ 1313  800  a00FB5C 86E0                     ldaa   #ErrNone      ;code for no errors ($E0)             
+ 1314  801  a00FB5E 20C3                     bra    xPrompt       ;then back to prompt
+ 1315  802                                       
+ 1316  803  a00FB60 16FC 7C     SkipBytes:   jsr    GetChar       ;read remaining bytes                               
+ 1317  804  a00FB63 53          WriteError:  decb                 ;
+ 1318  805  a00FB64 26FA                     bne    SkipBytes                           
+ 1319  806  a00FB66 86E6                     ldaa   #ErrFlash     ;code for Flash error ($E6)
+ 1320  807  a00FB68 20B9        WriteDone:   bra    xPrompt       ;then back to prompt
+ 1321  808                      
+ 1322  809                      ;*********************************************************************
+ 1323  810                      ;* Read Next Command - IX=IX+2; read m(IX,IX=1) and return the data
+ 1324  811                      ;*  8-bit command code from host to SCI0 RxD
+ 1325  812                      ;*  16-bit data sent back to host through SCI0 TxD
+ 1326  813                      ;*  uses current value of IX from user CPU regs stack frame
+ 1327  814                      ;*********************************************************************
+ 1328  815  a00FB6A 4FCA 080C   RdNextCmd:   brclr  flagReg,RunFlag,notRun  ;do command if not run
+ 1329  816  a00FB6E 87                       clra                 ;data = $00 (can't read real data)
+ 1330  817  a00FB6F 16FC 85                  jsr    PutChar       ;send $00 instead of read_next data
+ 1331  818  a00FB72 16FC 85                  jsr    PutChar       ;send $00 instead of read_next data
+ 1332  819  a00FB75 86E2                     ldaa   #ErrRun       ;code for run mode error
+ 1333  820  a00FB77 06F8 B1     xCmnd:       jmp    Prompt        ;back to prompt; run error
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1334  821  a00FB7A 0738        notRun:      bsr    preInc        ;get, pre-inc, & update user IX
+ 1335  822  a00FB7C 06FB 02                  jmp    sendExit      ;get data, send it, & back to prompt
+ 1336  823                      
+ 1337  824                      ;*********************************************************************
+ 1338  825                      ;* Write Byte Command - write specified address with specified data
+ 1339  826                      ;*  8-bit command code from host to SCI0 RxD
+ 1340  827                      ;*  16-bit address (high byte first) from host to SCI0 RxD
+ 1341  828                      ;*  8-bit data from host to SCI0 RxD
+ 1342  829                      ;*********************************************************************
+ 1343  830  a00FB7F 16FC 71     WtByteCmd:   jsr    getX          ;get address to write to
+ 1344  831  a00FB82 16FC 7C     WriteNext2:  jsr    GetChar       ;get data to write
+ 1345  832  a00FB85 16FC 8C                  jsr    CheckModule
+ 1346  833  a00FB88 2702                     beq    isRAMbyte
+ 1347  834  a00FB8A 2008                     bra    WriteByteNVM  ;deny access (byte NVM access)
+ 1348  835                      
+ 1349  836  a00FB8C 6A00        isRAMbyte:   staa   0,x           ;write to RAM or register
+ 1350  837  a00FB8E 87                       clra                 ;force Z=1 to indicate OK
+ 1351  838                      
+ 1352  839  a00FB8F 86E0        WriteExit:   ldaa  #ErrNone       ;code for no errors ($E0)
+ 1353  840  a00FB91 06F8 B1                  jmp    Prompt        ;ready for next command
+ 1354  841                      
+ 1355  842  a00FB94 86E5        WriteByteNVM: ldaa #ErrByteNVM    ;code for byte NVM error ($E5)
+ 1356  843  a00FB96 06F8 B1                  jmp    Prompt        ;ready for next command
+ 1357  844                      
+ 1358  845                      
+ 1359  846                      ;*********************************************************************
+ 1360  847                      ;* Write Word Command - write word of data
+ 1361  848                      ;*  8-bit command code from host to SCI0 RxD
+ 1362  849                      ;*  16-bit address (high byte first) from host to SCI0 RxD
+ 1363  850                      ;*  16-bit value to write
+ 1364  851                      ;*********************************************************************
+ 1365  852  a00FB99 16FC 71     WtWordCmd:   jsr    getX          ;get address to write to
+ 1366  853  a00FB9C C602        			 ldab  #02            ;one word +1
+ 1367  854  a00FB9E 37          			 pshb				  ;save it on stack
+ 1368  855  a00FB9F 2099                     bra    WriteWord     ;get & write data, & back to prompt
+ 1369  856                                   
+ 1370  857                      ;*********************************************************************
+ 1371  858                      ;* Write Next Command - IX=IX+1; write specified data to m(IX)
+ 1372  859                      ;*  8-bit command code from host to SCI0 RxD
+ 1373  860                      ;*  16-bit data from host to SCI0 RxD
+ 1374  861                      ;*
+ 1375  862                      ;*  uses current value of IX from user CPU regs stack frame
+ 1376  863                      ;*********************************************************************
+ 1377  864  a00FBA1 4FCA 0808   WtNextCmd:   brclr  flagReg,RunFlag,notRunW  ;do command if not run
+ 1378  865  a00FBA5 16FC 71                  jsr    getX          ;clear data
+ 1379  866  a00FBA8 86E2                     ldaa   #ErrRun       ;code for run mode error
+ 1380  867  a00FBAA 06F8 B1     xCmndW:      jmp    Prompt        ;back to prompt; run error
+ 1381  868                      
+ 1382  869  a00FBAD 0705        notRunW:     bsr    preInc        ;get, pre-inc, & update user IX
+ 1383  870  a00FBAF C602        			 ldab  #02            ;one word +1
+ 1384  871  a00FBB1 37          			 pshb				  ;save it on stack
+ 1385  872  a00FBB2 2086                     bra    WriteWord     ;get & write data, & back to prompt
+ 1386  873                      
+ 1387  874                      ;*********************************************************************
+ 1388  875                      ;* utility to get IX from stack frame and pre increment it by 2
+ 1389  876                      ;* assumes interrupts are blocked while in monitor
+ 1390  877                      ;*********************************************************************
+ 1391  878  a00FBB4 1B82        preInc:      leas 2,sp
+ 1392  879  a00FBB6 EE83                     ldx    UXreg,sp      ;get user X
+ 1393  880  a00FBB8 08                       inx                  ;pre-increment
+ 1394  881  a00FBB9 08                       inx                  ;pre-increment
+ 1395  882  a00FBBA 6E83                     stx    UXreg,sp      ;put adjusted user X back on stack
+ 1396  883  a00FBBC 1B9E                     leas -2,sp
+ 1397  884  a00FBBE 3D                       rts                  ;pre-incremented IX still in IX
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1398  885                      
+ 1399  886                      ;*********************************************************************
+ 1400  887                      ;* Read Registers Command - read user's CPU register values
+ 1401  888                      ;*
+ 1402  889                      ;*  16-bit SP value (high byte first) sent to host through SCI0 TxD
+ 1403  890                      ;*  16-bit PC value (high byte first) sent to host through SCI0 TxD
+ 1404  891                      ;*  16-bit IY value (high byte first) sent to host through SCI0 TxD
+ 1405  892                      ;*  16-bit IX value (high byte first) sent to host through SCI0 TxD
+ 1406  893                      ;*  16-bit D  value (high byte first) sent to host through SCI0 TxD
+ 1407  894                      ;*   8-bit CCR value sent to host through SCI0 TxD
+ 1408  895                      ;*
+ 1409  896                      ;* User CPU registers stack frame...
+ 1410  897                      ;*
+ 1411  898                      ;*   +0  UCcr   <- Monitor's SP
+ 1412  899                      ;*   +1  UDreg   (B:A)
+ 1413  900                      ;*   +3  UXreg
+ 1414  901                      ;*   +5  UYreg
+ 1415  902                      ;*   +7  UPc
+ 1416  903                      ;*   +9  ---     <- User's SP
+ 1417  904                      ;*********************************************************************
+ 1418  905  a00FBBF B775        RdRegsCmd:   tsx                  ;IX = Monitor SP +2
+ 1419  906  a00FBC1 1A09                     leax   SPOffset,x    ;correct SP value
+ 1420  907  a00FBC3 16FC 68                  jsr    put16         ;send user SP out SCI0
+ 1421  908  a00FBC6 EE87                     ldx    UPc,sp        ;user PC to IX
+ 1422  909  a00FBC8 16FC 68                  jsr    put16         ;send user PC out SCI0
+ 1423  910  a00FBCB EE85                     ldx    UYreg,sp      ;user IY to IX
+ 1424  911  a00FBCD 16FC 68                  jsr    put16         ;send user IY out SCI0
+ 1425  912  a00FBD0 EE83                     ldx    UXreg,sp      ;user IX to IX
+ 1426  913  a00FBD2 16FC 68                  jsr    put16         ;send user IX out SCI0
+ 1427  914  a00FBD5 EE81                     ldx    UDreg,sp      ;user D to IX
+ 1428  915  a00FBD7 B7C5                     exg    d,x
+ 1429  916  a00FBD9 B781                     exg    a,b           ;flip as D is stacked B:A
+ 1430  917  a00FBDB B7C5                     exg    d,x
+ 1431  918  a00FBDD 16FC 68                  jsr    put16         ;send user D out SCI0
+ 1432  919  a00FBE0 A680                     ldaa   UCcr,sp       ;user CCR to A
+ 1433  920  a00FBE2 16FC 85                  jsr    PutChar       ;send user CCR out SCI0
+ 1434  921  a00FBE5 06F8 AF                  jmp    CommandOK     ;back to prompt
+ 1435  922                      
+ 1436  923                      ;*********************************************************************
+ 1437  924                      ;* Write CCR Command - write user's CCR register value
+ 1438  925                      ;*  8-bit command code from host to SCI0 RxD
+ 1439  926                      ;*  8-bit data for CCR from host to SCI0 RxD
+ 1440  927                      ;*********************************************************************
+ 1441  928  a00FBE8 16FC 7C     WriteCcrCmd: jsr    GetChar       ;read new CCR value
+ 1442  929  a00FBEB 6A80                     staa   UCcr,sp       ;replace user CCR value
+ 1443  930  a00FBED 06F8 AF                  jmp    CommandOK     ;back to no error and prompt
+ 1444  931                      
+ 1445  932                      ;*********************************************************************
+ 1446  933                      ;* Write D Command - write user's D register value
+ 1447  934                      ;*  8-bit command code from host to SCI0 RxD
+ 1448  935                      ;*  16-bit data (high byte first) for D from host to SCI0 RxD
+ 1449  936                      ;*********************************************************************
+ 1450  937  a00FBF0 16FC 71     WriteDCmd:   jsr    getX          ;read new D value
+ 1451  938  a00FBF3 B7C5                     exg    d,x
+ 1452  939  a00FBF5 B781                     exg    a,b           ;flip as D is stacked B:A
+ 1453  940  a00FBF7 B7C5                     exg    d,x
+ 1454  941  a00FBF9 6E81                     stx    UDreg,sp      ;replace user D value
+ 1455  942  a00FBFB 06F8 AF                  jmp    CommandOK     ;back to no error and prompt
+ 1456  943                      
+ 1457  944                      ;*********************************************************************
+ 1458  945                      ;* Write IX Command - write user's IX register value
+ 1459  946                      ;*  8-bit command code from host to SCI0 RxD
+ 1460  947                      ;*  16-bit data (high byte first) for IX from host to SCI0 RxD
+ 1461  948                      ;*********************************************************************
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1462  949  a00FBFE 16FC 71     WriteIXCmd:  jsr    getX          ;read new IX value
+ 1463  950  a00FC01 6E83                     stx    UXreg,sp      ;replace user IX value
+ 1464  951  a00FC03 06F8 AF                  jmp    CommandOK     ;back to no error and prompt
+ 1465  952                      
+ 1466  953                      ;*********************************************************************
+ 1467  954                      ;* Write IY Command - write user's IY register value
+ 1468  955                      ;*  8-bit command code from host to SCI0 RxD
+ 1469  956                      ;*  16-bit data (high byte first) for IY from host to SCI0 RxD
+ 1470  957                      ;*********************************************************************
+ 1471  958  a00FC06 16FC 71     WriteIYCmd:  jsr    getX          ;read new IY value
+ 1472  959  a00FC09 6E85                     stx    UYreg,sp      ;replace user IY value
+ 1473  960  a00FC0B 06F8 AF                  jmp    CommandOK     ;back to no error and prompt
+ 1474  961                      
+ 1475  962                      ;*********************************************************************
+ 1476  963                      ;* Write PC Command - write user's PC register value
+ 1477  964                      ;*  8-bit command code from host to SCI0 RxD
+ 1478  965                      ;*  16-bit data (high byte first) for PC from host to SCI0 RxD
+ 1479  966                      ;*********************************************************************
+ 1480  967  a00FC0E 16FC 71     WritePcCmd:  jsr    getX          ;read new PC thru SCI0 to IX
+ 1481  968  a00FC11 6E87                     stx    UPc,sp       ;replace user PC value
+ 1482  969  a00FC13 06F8 AF                  jmp    CommandOK     ;back to no error and prompt
+ 1483  970                      
+ 1484  971                      ;*********************************************************************
+ 1485  972                      ;* Write SP Command - write user's SP register value
+ 1486  973                      ;*  8-bit command code from host to SCI0 RxD
+ 1487  974                      ;*  16-bit data (high byte first) for SP from host to SCI0 RxD
+ 1488  975                      ;*
+ 1489  976                      ;*  Since other user CPU register values are stored on the stack, the
+ 1490  977                      ;*  host will need to re-write the other user registers after SP is
+ 1491  978                      ;*  changed. This routine just changes SP itself.
+ 1492  979                      ;*
+ 1493  980                      ;*  SP value is user's SP & it is adjusted (-10) to accommodate the
+ 1494  981                      ;*  user CPU register stack frame.
+ 1495  982                      ;*
+ 1496  983                      ;*  If the host attempts to set the user SP value <RamStart or >RamLast
+ 1497  984                      ;*  then the change is ignored, because such values would not support
+ 1498  985                      ;*  proper execution of the monitor firmware.
+ 1499  986                      ;*********************************************************************
+ 1500  987  a00FC16 0759        WriteSpCmd:  bsr    getX         ;new SP value now in IX
+ 1501  988  a00FC18 1A17                     leax  -SPOffset,x   ;correct SP value
+ 1502  989  a00FC1A 8E10 1A                  cpx   #LowSPLimit   ;check against lower limit
+ 1503  990  a00FC1D 250A                     blo    spBad
+ 1504  991  a00FC1F 8E3F F7                  cpx   #HighSPLimit  ;check against upper limit
+ 1505  992  a00FC22 2205                     bhi    spBad
+ 1506  993  a00FC24 B757                     txs                 ;IX -> SP
+ 1507  994  a00FC26 06F8 AF                  jmp    CommandOK    ;back to no error and prompt
+ 1508  995  a00FC29 86E4        spBad:       ldaa    #ErrWriteSP      ;error code for stack errors
+ 1509  996                      ;             bsr    PutChar      ;send error code
+ 1510  997  a00FC2B 06F8 B1                  jmp    Prompt       ;send status and >
+ 1511  998                      
+ 1512  999                      ;*********************************************************************
+ 1513 1000                      ;* Trace 1 Command - trace one user instruction starting at current PC
+ 1514 1001                      ;*  8-bit command code from host to SCI0 RxD
+ 1515 1002                      ;*
+ 1516 1003                      ;*  if an interrupt was already pending, the user PC will point at the
+ 1517 1004                      ;*  ISR after the trace and the opcode at the original address will
+ 1518 1005                      ;*  not have been executed. (because the interrupt response is
+ 1519 1006                      ;*  considered to be an instruction to the CPU)
+ 1520 1007                      ;*********************************************************************
+ 1521 1008                      ;
+ 1522 1009  a00FC2E 3D          pagebits:   fcb      $3D		;$0000-$3FFF is PPAGE $3D
+ 1523 1010  a00FC2F 3E                      fcb      $3E		;$4000-$7FFF is PPAGE $3E
+ 1524 1011  a00FC30 3F                      fcb      $3F		;$C000-$FFFF is PPAGE $3F
+ 1525 1012                      pagebitsaddr:
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1526 1013  a00FC31 FC2E                    fdb     pagebits     ;$0000-$3FFF : Use constant $3D
+ 1527 1014  a00FC33 FC2F                    fdb     pagebits+1   ;$4000-$7FFF : Use constant $3E (2nd last page)
+ 1528 1015  a00FC35 0030                    fdb     $0030        ;$8000-$BFFF : Use window PPAGE
+ 1529 1016  a00FC37 FC30                    fdb     pagebits+2   ;$C000-$FFFF : Use constant $3F (last page)
+ 1530 1017                      Trace1Cmd:
+ 1531 1018  a00FC39 4CCA 04                 bset    flagReg,TraceFlag  ;so at SWI we know it was Trace
+ 1532 1019  a00FC3C EE87                    ldx     UPc,sp       ;PC of go address
+ 1533 1020  a00FC3E 08                      inx                  ;IX points at go opcode +1
+ 1534 1021  a00FC3F 08                      inx                  ;IX points at go opcode +2
+ 1535 1022  a00FC40 B7C5         	        xgdx
+ 1536 1023  a00FC42 C4FE                    andb   #$FE
+ 1537 1024  a00FC44 5C2B                    std     DBGACH       ;(BKP0H) debugger trigger address
+ 1538 1025  a00FC46 5C2E                    std     DBGBCH       ;(BKP1H) same for second address to have it initialized
+ 1539 1026  a00FC48 45                      rola
+ 1540 1027  a00FC49 55                      rolb
+ 1541 1028  a00FC4A 45                      rola
+ 1542 1029  a00FC4B 55                      rolb				 ;get ready to search pagebits table
+ 1543 1030  a00FC4C C403                    andb   #$03          ;what range 0-3FFF,4000-7FFF,8000-BFFF,or C000-FFFF?
+ 1544 1031  a00FC4E 87                      clra
+ 1545 1032  a00FC4F 59                      lsld
+ 1546 1033  a00FC50 B7C5                    xgdx
+ 1547 1034  a00FC52 EEE2 FC31               ldx     pagebitsaddr,x
+ 1548 1035  a00FC56 A600                    ldaa    0,x
+ 1549 1036                      
+ 1550 1037  a00FC58 5A2A                    staa    DBGACX       ;(BKP0X) set page byte of address
+ 1551 1038  a00FC5A 5A2D                    staa    DBGBCX       ;(BKP1X) same for second address to have it initialized
+ 1552 1039  a00FC5C 8680                    ldaa   #traceOne     ; enable, arm, CPU force
+ 1553 1040  a00FC5E 5A28                    staa    DBGC2        ;(BKPCT0) arm DBG to trigger after 1 instr.
+ 1554 1041  a00FC60 0B                      rti                  ; restore regs and go to user code
+ 1555 1042                      
+ 1556 1043                      ;*********************************************************************
+ 1557 1044                      ;* Go Command - go to user's program at current PC address
+ 1558 1045                      ;*  8-bit command code from host to SCI0 RxD
+ 1559 1046                      ;* - no promt is issued 
+ 1560 1047                      ;*  typically, an SWI will cause control to pass back to the monitor
+ 1561 1048                      ;*********************************************************************
+ 1562 1049  a00FC61 4CCB 20     GoCmd:       bset SCI0CR2,RIE     ;need to enable SCI0 Rx interrupts to
+ 1563 1050                                                        ; enter monitor on any char received
+ 1564 1051  a00FC64 4DCA 04                  bclr  flagReg,TraceFlag ; run flag clr
+ 1565 1052  a00FC67 0B                       rti                  ;restore regs and exit
+ 1566 1053                      ;*********************************************************************
+ 1567 1054                      ;* Utility to send a 16-bit value out X through SCI0
+ 1568 1055                      ;*********************************************************************
+ 1569 1056  a00FC68 B7C5        put16:       exg    d,x           ;move IX to A
+ 1570 1057  a00FC6A 0719                     bsr    PutChar       ;send high byte
+ 1571 1058  a00FC6C 180F                     tba                  ;move B to A
+ 1572 1059  a00FC6E 0715                     bsr    PutChar       ;send low byte
+ 1573 1060  a00FC70 3D                       rts
+ 1574 1061                      
+ 1575 1062                      ;*********************************************************************
+ 1576 1063                      ;* Utility to get a 16-bit value through SCI0 into X
+ 1577 1064                      ;*********************************************************************
+ 1578 1065  a00FC71 0709        getX:        bsr    GetChar       ;get high byte
+ 1579 1066  a00FC73 180E                     tab                  ;save in B
+ 1580 1067  a00FC75 0705                     bsr    GetChar       ;get low byte
+ 1581 1068  a00FC77 B781                     exg    a,b           ;flip high and low byte
+ 1582 1069  a00FC79 B7C5                     exg    d,x           ;16-bit value now in IX
+ 1583 1070  a00FC7B 3D                       rts
+ 1584 1071                      ;*********************************************************************
+ 1585 1072                      ;* GetChar - wait indefinitely for a character to be received
+ 1586 1073                      ;*  through SCI0 (until RDRF becomes set) then read char into A
+ 1587 1074                      ;*  and return. Reading character clears RDRF. No error checking.
+ 1588 1075                      ;*
+ 1589 1076                      ;* Calling convention:
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1590 1077                      ;*            bsr    GetChar
+ 1591 1078                      ;*
+ 1592 1079                      ;* Returns: received character in A
+ 1593 1080                      ;*********************************************************************
+ 1594 1081  a00FC7C 4ECC 2002   GetChar:     brset  SCI0SR1,RDRF,RxReady ;exit loop when RDRF=1
+ 1595 1082  a00FC80 20FA                     bra    GetChar              ;loop till RDRF set
+ 1596 1083  a00FC82 96CF        RxReady:     ldaa   SCI0DRL              ;read character into A
+ 1597 1084  a00FC84 3D                       rts                         ;return
+ 1598 1085                      
+ 1599 1086                      ;*********************************************************************
+ 1600 1087                      ;* PutChar - sends the character in A out SCI0
+ 1601 1088                      ;*
+ 1602 1089                      ;* Calling convention:
+ 1603 1090                      ;*            ldaa    data          ;character to be sent
+ 1604 1091                      ;*            bsr    PutChar
+ 1605 1092                      ;*
+ 1606 1093                      ;* Returns: nothing (A unchanged)
+ 1607 1094                      ;*********************************************************************
+ 1608 1095  a00FC85 4FCC 80FC   PutChar:     brclr   SCI0SR1,TDRE,PutChar ;wait for Tx ready
+ 1609 1096  a00FC89 5ACF                     staa    SCI0DRL       ;send character from A
+ 1610 1097  a00FC8B 3D                       rts
+ 1611 1098                      
+ 1612 1099                      ;*********************************************************************
+ 1613 1100                      ;* CheckModule - check in what memory type the address in IX points to
+ 1614 1101                      ;*  The location may be RAM, FLASH, EEPROM, or a register
+ 1615 1102                      ;*  if the vector table is addresses, IX is changed to point to the
+ 1616 1103                      ;*  same vector in the pseudo vector table
+ 1617 1104                      ;*  returns in B: 1 FLASH or EEPROM
+ 1618 1105                      ;*                0 RAM or register (all the rest of the address space)
+ 1619 1106                      ;*               -1 access denied (monitor or pseudo vector)
+ 1620 1107                      ;*  all registers are preserved except B
+ 1621 1108                      ;*********************************************************************
+ 1622 1109  a00FC8C 3B          CheckModule: pshd                 ;preserve original data
+ 1623 1110  a00FC8D 8E40 00                  cpx    #RomStart
+ 1624 1111  a00FC90 2514                     blo    check4EE      ;skip if not flash
+ 1625 1112  a00FC92 8EFF 80                  cpx    #VectorTable
+ 1626 1113  a00FC95 2409                     bhs    isVector      ;is it in the real vector table
+ 1627 1114  a00FC97 8EF7 80                  cpx    #PVecTable
+ 1628 1115  a00FC9A 2518                     blo    isToProgram   ;pseudo vector table or monitor area
+ 1629 1116  a00FC9C C6FF                     ldab   #$FF          ;access denied (N=1, Z=0)
+ 1630 1117  a00FC9E 3A                       puld                 ;restore original data (D)
+ 1631 1118  a00FC9F 3D                       rts
+ 1632 1119                      
+ 1633 1120  a00FCA0 1AE2 F800   isVector:    leax   BootStart,x   ;access pseudo vector table
+ 1634 1121  a00FCA4 200E                     bra    isToProgram
+ 1635 1122                      
+ 1636 1123  a00FCA6 4F1C 300E   check4EE:    brclr  MEMSIZ0,eep_sw1+eep_sw0,isRAM  ;Check if device has EEprom
+ 1637 1124  a00FCAA 8E04 00     			 cpx   #EEpromStart
+ 1638 1125  a00FCAD 2509                     blo    isRAM         ;treat as RAM or registers
+ 1639 1126  a00FCAF 8E0F FF     			 cpx   #EEpromEnd	  ;Greater than allocated EE space?
+ 1640 1127  a00FCB2 2204                     bhi    isRAM         ;must be registers or RAM
+ 1641 1128  a00FCB4 C601        isToProgram: ldab   #1            ;set flgs - signal FLASH (N=0, Z=0)
+ 1642 1129  a00FCB6 3A                       puld                 ;restore original data (D)
+ 1643 1130  a00FCB7 3D                       rts
+ 1644 1131                      
+ 1645 1132  a00FCB8 C7          isRAM:       clrb                 ;signal RAM  (N=0, Z=1)
+ 1646 1133  a00FCB9 3A                       puld                 ;restore original data (D)
+ 1647 1134  a00FCBA 3D                       rts
+ 1648 1135                      
+ 1649 1136                      ;*********************************************************************
+ 1650 1137                      ;* WriteD2IX - Write the data in D (word) to the address in IX
+ 1651 1138                      ;*  The location may be RAM, FLASH, EEPROM, or a register
+ 1652 1139                      ;*  if FLASH or EEPROM, the operation is completed before return
+ 1653 1140                      ;*  IX and A preserved, returns Z=1 (.EQ.) if OK
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1654 1141                      ;*
+ 1655 1142                      ;*********************************************************************
+ 1656 1143  a00FCBB 34          WriteD2IX:   pshx                 ;preserve original address
+ 1657 1144  a00FCBC 3B                       pshd                 ;preserve original data
+ 1658 1145  a00FCBD 07CD                     bsr    CheckModule
+ 1659 1146  a00FCBF 2B50                     bmi    ExitWrite     ;deny access (monitor or pseudo vector)
+ 1660 1147  a00FCC1 2715                     beq    isRAMword
+ 1661 1148  a00FCC3 AC00                     cpd    0,x           ;FLASH or EEPROM needs programming
+ 1662 1149  a00FCC5 274A                     beq    ExitWrite     ;exit (OK) if already the right data
+ 1663 1150  a00FCC7 3B                       pshd                 ;temp save data to program
+ 1664 1151  a00FCC8 B751                     tfr    x,b           ;low byte of target address -> B
+ 1665 1152  a00FCCA C501                     bitb   #1            ;is B0 = 1?
+ 1666 1153  a00FCCC 2605                     bne    oddAdrErr     ;then it's odd addr -> exit
+ 1667 1154  a00FCCE EC00                     ldd    0,x           ;$FFFF if it was erased
+ 1668 1155  a00FCD0 8CFF FF                  cpd    #$FFFF        ;Z=1 if location was erased first
+ 1669 1156  a00FCD3 3A          oddAdrErr:   puld                 ;recover data, don't change CCR
+ 1670 1157  a00FCD4 263B                     bne    ExitWrite     ;exit w/ Z=0 to indicate error
+ 1671 1158  a00FCD6 202C                     bra    DoProgram
+ 1672 1159                      
+ 1673 1160  a00FCD8 6C00        isRAMword:   std    0,x           ;write to RAM or register
+ 1674 1161  a00FCDA 87                       clra                 ;force Z=1 to indicate OK
+ 1675 1162  a00FCDB 2034                     bra    ExitWrite
+ 1676 1163                      
+ 1677 1164                      ;*********************************************************************
+ 1678 1165                      ;* WriteA2IX - Write the data in A (byte) to the address in IX
+ 1679 1166                      ;*  The location may be RAM, FLASH, EEPROM, or a register
+ 1680 1167                      ;*  if FLASH or EEPROM, the operation is completed before return
+ 1681 1168                      ;*  IX and A preserved, returns Z=1 (.EQ.) if OK
+ 1682 1169                      ;*
+ 1683 1170                      ;* Note: Byte writing to the FLASH and EEPROM arrays is a violation
+ 1684 1171                      ;*       of the HC9S12 specification. Doing so, will reduce long term
+ 1685 1172                      ;*       data retention and available prog / erase cycles
+ 1686 1173                      ;*
+ 1687 1174                      ;*********************************************************************
+ 1688 1175                      
+ 1689 1176  a00FCDD 34          WriteA2IX:   pshx                 ;preserve original address
+ 1690 1177  a00FCDE 3B                       pshd                 ;preserve original data
+ 1691 1178  a00FCDF 07AB                     bsr    CheckModule
+ 1692 1179  a00FCE1 2B2E                     bmi    ExitWrite     ;deny access (monitor or pseudo vector)
+ 1693 1180  a00FCE3 271A                     beq    isWRAMbyte      
+ 1694 1181  a00FCE5 A100                     cmpa   0,x           ;FLASH or EEPROM needs programming 
+ 1695 1182  a00FCE7 2728                     beq    ExitWrite     ;exit (OK) if already the right data
+ 1696 1183  a00FCE9 E600                     ldab   0,x           ;$FF if it was erased
+ 1697 1184  a00FCEB 52                       incb                 ;Z=1 if location was erased first
+ 1698 1185  a00FCEC 2623                     bne    ExitWrite     ;exit w/ Z=0 to indicate error
+ 1699 1186                              
+ 1700 1187  a00FCEE B751                     tfr    x,b           ;test least significant bit
+ 1701 1188  a00FCF0 C501                     bitb   #1            ;is B0 = 1?
+ 1702 1189  a00FCF2 2604                     bne    isOddAdr      ;then it's odd addr.             
+ 1703 1190  a00FCF4 E601        isEvenAdr:   ldab   1,x           ;low byte of D (A:B) from memory
+ 1704 1191  a00FCF6 200C                     bra    DoProgram                     
+ 1705 1192  a00FCF8 180E        isOddAdr:    tab                  ;move to low byte of D (A:B)
+ 1706 1193  a00FCFA 09                       dex                  ;point to even byte
+ 1707 1194  a00FCFB A600                     ldaa   ,x            ;high byte of D (A:B) from memory  
+ 1708 1195  a00FCFD 2005                     bra    DoProgram                        
+ 1709 1196                                                           
+ 1710 1197  a00FCFF 6A00        isWRAMbyte:  staa   0,x           ;write to RAM or register
+ 1711 1198  a00FD01 87                       clra                 ;force Z=1 to indicate OK
+ 1712 1199  a00FD02 200D                     bra    ExitWrite 
+ 1713 1200                      
+ 1714 1201                      ; Programs D to IX in either FLASH or EEPROM
+ 1715 1202  a00FD04 0727        DoProgram:   bsr    abClr         ;abort commands and clear errors
+ 1716 1203  a00FD06 8E40 00                  cpx    #RomStart     ;simple test only
+ 1717 1204  a00FD09 2504                     blo    itsEE         ; details already verified
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1718 1205  a00FD0B 072B                     bsr    ProgFlash     ;program the requested location
+ 1719 1206  a00FD0D 2002                     bra    ExitWrite     ;exit (Z indicates good or bad)
+ 1720 1207  a00FD0F 0703        itsEE:       bsr    ProgEE        ;program the requested location
+ 1721 1208                      ; exit Write?2IX functions (Z indicates good or bad)
+ 1722 1209  a00FD11 3A          ExitWrite:   puld                 ;restore original data (D)
+ 1723 1210  a00FD12 30                       pulx                 ;restore original address (IX)
+ 1724 1211  a00FD13 3D                       rts
+ 1725 1212                      
+ 1726 1213                      ;*********************************************************************
+ 1727 1214                      ;* Progee - program a single word in the HCS9S12 EEPROM
+ 1728 1215                      ;*  the location is assumed to be previously erased. This routine
+ 1729 1216                      ;*  waits for the command to complete.
+ 1730 1217                      ;*
+ 1731 1218                      ;* On entry... IX - points at the EEPROM address to be programmed
+ 1732 1219                      ;*  A - holds the data value to be programmed
+ 1733 1220                      ;*
+ 1734 1221                      ;* Calling convention:
+ 1735 1222                      ;*           bsr    Prog1ee
+ 1736 1223                      ;*
+ 1737 1224                      ;* Returns: IX unchanged and A = ESTAT shifted left by 2 bits
+ 1738 1225                      ;*  Z=1 if OK, Z=0 if protect violation or access error
+ 1739 1226                      ;*********************************************************************
+ 1740 1227  a00FD14 6C00        ProgEE:      std     ,x           ;latch address & data to program
+ 1741 1228  a00FD16 8620                     ldaa    #ProgWord    ;Select program word command
+ 1742 1229  a00FD18 7A01 16                  staa    ECMD         ;issue word program command
+ 1743 1230  a00FD1B 8680                     ldaa    #CBEIF
+ 1744 1231  a00FD1D 7A01 15                  staa    ESTAT        ;[pwpp] register command
+ 1745 1232  a00FD20 A7                       nop                  ;[p]
+ 1746 1233  a00FD21 A7                       nop
+ 1747 1234  a00FD22 A7                       nop
+ 1748 1235  a00FD23 B601 15     ChkDoneEE:   ldaa    ESTAT        ;[prpp] (min 4~ before 1st read)
+ 1749 1236  a00FD26 84C0                     anda   #$C0          ; mask all but 2 msb
+ 1750 1237  a00FD28 48                       lsla                 ;CCIF now in MSB
+ 1751 1238  a00FD29 2AF8                     bpl    ChkDoneEE     ;wait for queued commands to finish
+ 1752 1239  a00FD2B 48                       asla                 ;A=00 & Z=1 unless PVIOL or ACCERR
+ 1753 1240  a00FD2C 3D          xProgEE      rts
+ 1754 1241                      
+ 1755 1242                      ;
+ 1756 1243                      ; utility sub to abort previous commands in flash and EEPROM
+ 1757 1244                      ; and clear any pending errors
+ 1758 1245                      ;
+ 1759 1246  a00FD2D 36          abClr:       psha
+ 1760 1247  a00FD2E 8630                     ldaa    #PVIOL+ACCERR ;mask
+ 1761 1248  a00FD30 7A01 15                  staa    ESTAT         ;abort any command and clear errors
+ 1762 1249  a00FD33 7A01 05                  staa    FSTAT         ;abort any command and clear errors
+ 1763 1250  a00FD36 32                       pula
+ 1764 1251  a00FD37 3D                       rts
+ 1765 1252                      
+ 1766 1253                      ;*********************************************************************
+ 1767 1254                      ;* Progflash - programs one byte of HCS9S12 FLASH
+ 1768 1255                      ;*  This routine waits for the command to complete before returning.
+ 1769 1256                      ;*  assumes location was blank. This routine can be run from FLASH
+ 1770 1257                      ;*
+ 1771 1258                      ;* On entry... IX - points at the FLASH byte to be programmed
+ 1772 1259                      ;*             A holds the data for the location to be programmed
+ 1773 1260                      ;*
+ 1774 1261                      ;* Calling convention:
+ 1775 1262                      ;*           bsr    Prog1flash
+ 1776 1263                      ;*
+ 1777 1264                      ;* Uses: DoOnStack which uses SpSub
+ 1778 1265                      ;* Returns: IX unchanged and A = FSTAT bits PVIOL and ACCERR only
+ 1779 1266                      ;*  Z=1 if OK, Z=0 if protect violation or access error
+ 1780 1267                      ;*********************************************************************
+ 1781 1268  a00FD38 3B          ProgFlash:   pshd
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1782 1269  a00FD39 8E80 00                  cpx   #$8000         ; if <$8000 then bank 3E
+ 1783 1270  a00FD3C 250C                     blo    its3E         ;set ppage to 3E
+ 1784 1271  a00FD3E 8EC0 00                  cpx   #$C000         ; if > $BFFF then bank 3F
+ 1785 1272  a00FD41 250C                     blo    ProgFlash1    ;set ppage 3F
+ 1786 1273  a00FD43 180B 3F00                movb  #$3F,PPAGE     ;
+             00FD47 30         
+ 1787 1274  a00FD48 2005                     bra   ProgFlash1
+ 1788 1275  a00FD4A 180B 3E00   its3E:       movb  #$3E,PPAGE     ;
+             00FD4E 30         
+ 1789 1276                      
+ 1790 1277  a00FD4F D630        ProgFlash1:  ldab   PPAGE
+ 1791 1278  a00FD51 54                       lsrb                 ; calculate the value of the block select bits based
+ 1792 1279  a00FD52 54                       lsrb                 ; on bits 3:2 of the PPAGE register value. (<256k)
+ 1793 1280  a00FD53 CD02 00                  ldy   #SectorSize   ; get high byte of size
+ 1794 1281  a00FD56 8D02 00                  cpy   #$0200         ; if larger than $200 shift again
+ 1795 1282  a00FD59 2701                     beq    nBlockLoopb
+ 1796 1283  a00FD5B 54                       lsrb                 ; on bits 4:3 of the PPAGE register value. (512k)
+ 1797 1284                      
+ 1798 1285  a00FD5C 51          nBlockLoopb: comb
+ 1799 1286  a00FD5D C403                     andb  #$03           ; mask off all but the lower 2 bits.
+ 1800 1287  a00FD5F 7B01 03                  stab   FCNFG         ; select the block to program.
+ 1801 1288  a00FD62 C100                     cmpb  #$00           ; if block zero use DoOnStack method
+ 1802 1289  a00FD64 3A                       puld
+ 1803 1290  a00FD65 2711                     beq    ProgFlashSP
+ 1804 1291                      
+ 1805 1292  a00FD67 6C00        ProgFlshRom: std    ,x            ;latch address & data to program
+ 1806 1293  a00FD69 8620                     ldaa  #ProgWord         ;Select program word command
+ 1807 1294  a00FD6B 7A01 06                  staa   FCMD          ;issue byte program command
+ 1808 1295  a00FD6E 8680                     ldaa  #CBEIF
+ 1809 1296  a00FD70 072A                     bsr    SpSub         ;register command & wait to finish
+ 1810 1297  a00FD72 B601 05                  ldaa   FSTAT
+ 1811 1298  a00FD75 8430                     anda  #$30           ;mask all but PVIOL or ACCERR
+ 1812 1299  a00FD77 3D                       rts
+ 1813 1300                      
+ 1814 1301  a00FD78 6C00        ProgFlashSP: std    ,x            ;latch address and data
+ 1815 1302  a00FD7A 8620                     ldaa  #ProgWord         ;Select program word command
+ 1816 1303  a00FD7C 7A01 06                  staa   FCMD          ;issue byte program command
+ 1817 1304                      ;
+ 1818 1305                      ; DoOnStack will register the command then wait for it to finish
+ 1819 1306                      ;  in this unusual case where DoOnStack is the next thing in program
+ 1820 1307                      ;  memory, we don't need to call it. The rts at the end of DoOnStack
+ 1821 1308                      ;  will return to the code that called Prog1flash.
+ 1822 1309                      ;
+ 1823 1310                      ;*********************************************************************
+ 1824 1311                      ;* DoOnStack - copy SpSub onto stack and call it (see also SpSub)
+ 1825 1312                      ;*  De-allocates the stack space used by SpSub after returning from it.
+ 1826 1313                      ;*  Allows final steps in a flash prog/erase command to execute out
+ 1827 1314                      ;*  of RAM (on stack) while flash is out of the memory map
+ 1828 1315                      ;*  This routine can be used for flash word-program or erase commands
+ 1829 1316                      ;*
+ 1830 1317                      ;* Calling Convention:
+ 1831 1318                      ;*           bsr    DoOnStack
+ 1832 1319                      ;*
+ 1833 1320                      ;* Uses 22 bytes on stack + 2 bytes if BSR/bsr used to call it
+ 1834 1321                      ;* returns IX unchanged
+ 1835 1322                      ;********************************************************************
+ 1836 1323  a00FD7F 34          DoOnStack:   pshx                 ;save IX
+ 1837 1324  a00FD80 CEFD AC                  ldx   #SpSubEnd-2    ;point at last word to move to stack
+ 1838 1325  a00FD83 EC3E        SpmoveLoop:  ldd    2,x-          ;read from flash
+ 1839 1326  a00FD85 3B                       pshd                 ;move onto stack
+ 1840 1327  a00FD86 8EFD 9A                  cpx   #SpSub-2       ;past end?
+ 1841 1328  a00FD89 26F8                     bne    SpmoveLoop    ;loop till whole sub on stack
+ 1842 1329  a00FD8B B775                     tfr    sp,x          ;point to sub on stack
+ 1843 1330  a00FD8D 8680                     ldaa  #CBEIF         ;preload mask to register command
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1844 1331  a00FD8F 1500                     jsr    ,x            ;execute the sub on the stack
+ 1845 1332  a00FD91 1BF2 0012                leas   SpSubEnd-SpSub,sp  ;de-allocate space used by sub
+ 1846 1333  a00FD95 B601 05                  ldaa   FSTAT         ;get result of operation
+ 1847 1334  a00FD98 8430                     anda  #$30           ;and mask all but PVIOL or ACCERR
+ 1848 1335  a00FD9A 30                       pulx                 ;restore IX
+ 1849 1336  a00FD9B 3D                       rts                  ;to flash where DoOnStack was called
+ 1850 1337                      
+ 1851 1338                      ;*********************************************************************
+ 1852 1339                      ;* SpSub - register flash command and wait for Flash CCIF
+ 1853 1340                      ;*  this subroutine is copied onto the stack before executing
+ 1854 1341                      ;*  because you can't execute out of flash while a flash command is
+ 1855 1342                      ;*  in progress (see DoOnStack to see how this is used)
+ 1856 1343                      ;*
+ 1857 1344                      ;* Uses 18 bytes on stack + 2 bytes if a BSR/bsr calls it
+ 1858 1345                      ;*********************************************************************
+ 1859 1346                                   EVEN   			  ;Make code start word aliened
+ 1860 1347                      SpSub:       
+ 1861 1348  a00FD9C B721        		     tfr    ccr,b		  ;get copy of ccr
+ 1862 1349  a00FD9E 1410        			 orcc  #$10			  ;disable interrupts
+ 1863 1350  a00FDA0 7A01 05                  staa   FSTAT         ;[PwO] register command
+ 1864 1351  a00FDA3 A7                       nop                  ;[O] wait min 4~ from w cycle to r
+ 1865 1352  a00FDA4 A7                       nop                  ;[O]
+ 1866 1353  a00FDA5 A7                       nop                  ;[O]
+ 1867 1354  a00FDA6 1F01 0540                brclr  FSTAT,CCIF,*  ;[rfPPP] wait for queued commands to finish
+             00FDAA FB         
+ 1868 1355  a00FDAB B712                     tfr	b,ccr		  ;restore ccr and int condition
+ 1869 1356  a00FDAD 3D                       rts                  ;back into DoOnStack in flash
+ 1870 1357                      SpSubEnd:
+ 1871 1358                      ;*********************************************************************
+ 1872 1359                      ;* User Pseudo-vector Equates (just before protected block)
+ 1873 1360                      ;*  real vectors point here, each pseudo-vector is a bra instruction
+ 1874 1361                      ;*  to the user's ISR.
+ 1875 1362                      ;*********************************************************************
+ 1876 1363                      BSRTable:
+ 1877 1364  a00FDAE 077E        uvector63:	bsr    ISRHandler    ; /* vector 63 */
+ 1878 1365  a00FDB0 077C        uvector62:	bsr    ISRHandler    ; /* vector 62 */
+ 1879 1366  a00FDB2 077A        uvector61:	bsr    ISRHandler    ; /* vector 61 */
+ 1880 1367  a00FDB4 0778        uvector60:	bsr    ISRHandler    ; /* vector 60 */
+ 1881 1368  a00FDB6 0776        uvector59:	bsr    ISRHandler    ; /* vector 59 */
+ 1882 1369  a00FDB8 0774        uvector58:	bsr    ISRHandler    ; /* vector 58 */
+ 1883 1370  a00FDBA 0772        uvector57:	bsr    ISRHandler    ; /* vector 57 */
+ 1884 1371  a00FDBC 0770        uvector56:	bsr    ISRHandler    ; /* vector 56 */
+ 1885 1372  a00FDBE 076E        uvector55:	bsr    ISRHandler    ; /* vector 55 */
+ 1886 1373  a00FDC0 076C        uvector54:	bsr    ISRHandler    ; /* vector 54 */
+ 1887 1374  a00FDC2 076A        uvector53:	bsr    ISRHandler    ; /* vector 53 */
+ 1888 1375  a00FDC4 0768        uvector52:	bsr    ISRHandler    ; /* vector 52 */
+ 1889 1376  a00FDC6 0766        uvector51:	bsr    ISRHandler    ; /* vector 51 */
+ 1890 1377  a00FDC8 0764        uvector50:	bsr    ISRHandler    ; /* vector 50 */
+ 1891 1378  a00FDCA 0762        uvector49:	bsr    ISRHandler    ; /* vector 49 */
+ 1892 1379  a00FDCC 0760        uvector48:	bsr    ISRHandler    ; /* vector 48 */
+ 1893 1380  a00FDCE 075E        uvector47:	bsr    ISRHandler    ; /* vector 47 */
+ 1894 1381  a00FDD0 075C        uvector46:	bsr    ISRHandler    ; /* vector 46 */
+ 1895 1382  a00FDD2 075A        uvector45:	bsr    ISRHandler    ; /* vector 45 */
+ 1896 1383  a00FDD4 0758        uvector44:	bsr    ISRHandler    ; /* vector 44 */
+ 1897 1384  a00FDD6 0756        uvector43:	bsr    ISRHandler    ; /* vector 43 */
+ 1898 1385  a00FDD8 0754        uvector42:	bsr    ISRHandler    ; /* vector 42 */
+ 1899 1386  a00FDDA 0752        uvector41:	bsr    ISRHandler    ; /* vector 41 */
+ 1900 1387  a00FDDC 0750        uvector40:	bsr    ISRHandler    ; /* vector 40 */
+ 1901 1388  a00FDDE 074E        uvector39:	bsr    ISRHandler    ; /* vector 39 */
+ 1902 1389  a00FDE0 074C        uvector38:	bsr    ISRHandler    ; /* vector 38 */
+ 1903 1390  a00FDE2 074A        uvector37:	bsr    ISRHandler    ; /* vector 37 */
+ 1904 1391  a00FDE4 0748        uvector36:	bsr    ISRHandler    ; /* vector 36 */
+ 1905 1392  a00FDE6 0746        uvector35:	bsr    ISRHandler    ; /* vector 35 */
+ 1906 1393  a00FDE8 0744        uvector34:	bsr    ISRHandler    ; /* vector 34 */
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1907 1394  a00FDEA 0742        uvector33:	bsr    ISRHandler    ; /* vector 33 */
+ 1908 1395  a00FDEC 0740        uvector32:	bsr    ISRHandler    ; /* vector 32 */
+ 1909 1396  a00FDEE 073E        uvector31:	bsr    ISRHandler    ; /* vector 31 */
+ 1910 1397  a00FDF0 073C        uvector30:	bsr    ISRHandler    ; /* vector 30 */
+ 1911 1398  a00FDF2 073A        uvector29:	bsr    ISRHandler    ; /* vector 29 */
+ 1912 1399  a00FDF4 0738        uvector28:	bsr    ISRHandler    ; /* vector 28 */
+ 1913 1400  a00FDF6 0736        uvector27:	bsr    ISRHandler    ; /* vector 27 */
+ 1914 1401  a00FDF8 0734        uvector26:	bsr    ISRHandler    ; /* vector 26 */
+ 1915 1402  a00FDFA 0732        uvector25:	bsr    ISRHandler    ; /* vector 25 */
+ 1916 1403  a00FDFC 0730        uvector24:	bsr    ISRHandler    ; /* vector 24 */
+ 1917 1404  a00FDFE 072E        uvector23:	bsr    ISRHandler    ; /* vector 23 */
+ 1918 1405  a00FE00 072C        uvector22:	bsr    ISRHandler    ; /* vector 22 */
+ 1919 1406  a00FE02 072A        uvector21:	bsr    ISRHandler    ; /* vector 21 */
+ 1920 1407  a00FE04 0728        uvector20:	bsr    ISRHandler    ; SCI0, used for monitor (place holder only)
+ 1921 1408  a00FE06 0726        uvector19:	bsr    ISRHandler    ; /* vector 19 */
+ 1922 1409  a00FE08 0724        uvector18:	bsr    ISRHandler    ; /* vector 18 */
+ 1923 1410  a00FE0A 0722        uvector17:	bsr    ISRHandler    ; /* vector 17 */
+ 1924 1411  a00FE0C 0720        uvector16:	bsr    ISRHandler    ; /* vector 16 */
+ 1925 1412  a00FE0E 071E        uvector15:	bsr    ISRHandler    ; /* vector 15 */
+ 1926 1413  a00FE10 071C        uvector14:	bsr    ISRHandler    ; /* vector 14 */
+ 1927 1414  a00FE12 071A        uvector13:	bsr    ISRHandler    ; /* vector 13 */
+ 1928 1415  a00FE14 0718        uvector12:	bsr    ISRHandler    ; /* vector 12 */
+ 1929 1416  a00FE16 0716        uvector11:	bsr    ISRHandler    ; /* vector 11 */
+ 1930 1417  a00FE18 0714        uvector10:	bsr    ISRHandler    ; /* vector 10 */
+ 1931 1418  a00FE1A 0712        uvector09:	bsr    ISRHandler    ; /* vector 09 */
+ 1932 1419  a00FE1C 0710        uvector08:	bsr    ISRHandler    ; /* vector 08 */
+ 1933 1420  a00FE1E 070E        uvector07:	bsr    ISRHandler    ; /* vector 07 */
+ 1934 1421  a00FE20 070C        uvector06:	bsr    ISRHandler    ; /* vector 06 */
+ 1935 1422  a00FE22 070A        uvector05:	bsr    ISRHandler    ; /* vector 05 */
+ 1936 1423  a00FE24 0708        			bsr    ISRHandler    ; SWI, used for breakpoints (place holder only)
+ 1937 1424  a00FE26 0706        uvector03:	bsr    ISRHandler    ; /* vector 03 */
+ 1938 1425  a00FE28 0704        uvector02:	bsr    ISRHandler    ; /* vector 02 */
+ 1939 1426  a00FE2A 0702        uvector01:	bsr    ISRHandler    ; /* vector 01 */
+ 1940 1427  a00FE2C 0700                    bsr    ISRHandler    ; /* Reset vector */
+ 1941 1428                      
+ 1942 1429                      ;*********************************************************************
+ 1943 1430                      ;* ISRHandler this routine checks for unprogrammed interrupt
+ 1944 1431                      ;*  vectors and returns an $E3 error code if execution of an
+ 1945 1432                      ;*  unprogrammed vector is attempted
+ 1946 1433                      ;*********************************************************************
+ 1947 1434  a00FE2E 30          ISRHandler:  pulx    ;pull bsr return address off stack
+ 1948 1435  a00FE2F EDE2 F9D0                ldy     (PVecTable-BSRTable-2),X
+ 1949 1436  a00FE33 8DFF FF                  cpy     #$FFFF
+ 1950 1437  a00FE36 2702                     beq     BadVector
+ 1951 1438  a00FE38 0540                     jmp     ,Y
+ 1952 1439                      
+ 1953 1440                      ;*********************************************************************
+ 1954 1441                      ;* Invalid (erased) vector fetched
+ 1955 1442                      ;*   low byte of vector address is Status (passed in B to ReenterMon)
+ 1956 1443                      ;* Leave stack frame from ISR on stack to refresh monitor registers.
+ 1957 1444                      ;*********************************************************************
+ 1958 1445                      
+ 1959 1446  a00FE3A 1AE2 F9D0   BadVector:   leax   (PVecTable-BSRTable-2),X
+ 1960 1447  a00FE3E B7C5                     xgdx                 ;low byte of vector address in B
+ 1961 1448  a00FE40 06F9 96                  jmp    ReenterMon    ;and enter monitor
+ 1962 1449                      EndMonitor:
+ 1963 1450                      
+ 1964 1451          0000 0000     IF EndMonitor >= FProtStart
+ 1966 1453                        ENDIF
+ 1967 1454                      ;*********************************************************************
+ 1968 1455                      ;* Jump table for external use of routines.
+ 1969 1456                      ;*********************************************************************
+ 1970 1457                                   org    FProtStart-26 ;immediately before the vector table
+ 1971 1458  a00FEE6 06FC 85                  jmp    PutChar
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 1972 1459  a00FEE9 06FC 7C                  jmp    GetChar
+ 1973 1460  a00FEEC 06F9 ED                  jmp    EraseAllCmd
+ 1974 1461  a00FEEF 06FD 7F                  jmp    DoOnStack
+ 1975 1462  a00FEF2 06FC BB                  jmp    WriteD2IX
+ 1976 1463                      
+ 1977 1464                                   org    FProtStart-8
+ 1978 1465  a00FEF8 0011                     fdb    softwareID4	;Software device type (deviceID)
+ 1979 1466  a00FEFA 0116                     fdb    softwareID1	;Software revision (date)
+ 1980 1467  a00FEFC 2004                     fdb    softwareID2	;Software revision (year)
+ 1981 1468  a00FEFE 0201                     fdb    softwareID3	;Software revision (ver)
+ 1982 1469                      ;
+ 1983 1470                      ;*********************************************************************
+ 1984 1471                      ;* FLASH configuration: protection, security
+ 1985 1472                      ;*********************************************************************
+ 1986 1473                                   org    FProtStart   ; enable protection
+ 1987 1474  a00FF00 FFFF                     fdb    $FFFF        ; Skip Backdoor Key
+ 1988 1475  a00FF02 FFFF                     fdb    $FFFF        ; Skip Backdoor Key
+ 1989 1476  a00FF04 FFFF                     fdb    $FFFF        ; Skip Backdoor Key
+ 1990 1477  a00FF06 FFFF                     fdb    $FFFF        ; Skip Backdoor Key
+ 1991 1478                      
+ 1992 1479  a00FF08 FFFF                     fdb    $FFFF        ; Skip Reserved
+ 1993 1480                      
+ 1994 1481  a00FF0A FF                       fcb    $FF          ; protection block 3
+ 1995 1482  a00FF0B FF                       fcb    $FF          ; protection block 2
+ 1996 1483  a00FF0C FF                       fcb    $FF          ; protection block 1
+ 1997 1484  a00FF0D C7                       fcb    FProtBlksz   ; protection block 0
+ 1998 1485  a00FF0E FF                       fcb    $FF          ; Skip
+ 1999 1486  a00FF0F BE                       fcb    FSecure      ; set security and backdoor access
+ 2000 1487                      ;*********************************************************************
+ 2001 1488                      ;* Define all vectors even if program doesn't use them all
+ 2002 1489                      ;*********************************************************************
+ 2003 1490                      
+ 2004 1491                                 org    VectorTable
+ 2005 1492  a00FF80 FDAE        vector63:  fdb    uvector63  ; /* vector 63 */
+ 2006 1493  a00FF82 FDB0        vector62:  fdb    uvector62  ; /* vector 62 */
+ 2007 1494  a00FF84 FDB2        vector61:  fdb    uvector61  ; /* vector 61 */
+ 2008 1495  a00FF86 FDB4        vector60:  fdb    uvector60  ; /* vector 60 */
+ 2009 1496  a00FF88 FDB6        vector59:  fdb    uvector59  ; /* vector 59 */
+ 2010 1497  a00FF8A FDB8        vector58:  fdb    uvector58  ; /* vector 58 */
+ 2011 1498  a00FF8C FDBA        vector57:  fdb    uvector57  ; /* vector 57 */
+ 2012 1499  a00FF8E FDBC        vector56:  fdb    uvector56  ; /* vector 56 */
+ 2013 1500  a00FF90 FDBE        vector55:  fdb    uvector55  ; /* vector 55 */
+ 2014 1501  a00FF92 FDC0        vector54:  fdb    uvector54  ; /* vector 54 */
+ 2015 1502  a00FF94 FDC2        vector53:  fdb    uvector53  ; /* vector 53 */
+ 2016 1503  a00FF96 FDC4        vector52:  fdb    uvector52  ; /* vector 52 */
+ 2017 1504  a00FF98 FDC6        vector51:  fdb    uvector51  ; /* vector 51 */
+ 2018 1505  a00FF9A FDC8        vector50:  fdb    uvector50  ; /* vector 50 */
+ 2019 1506  a00FF9C FDCA        vector49:  fdb    uvector49  ; /* vector 49 */
+ 2020 1507  a00FF9E FDCC        vector48:  fdb    uvector48  ; /* vector 48 */
+ 2021 1508  a00FFA0 FDCE        vector47:  fdb    uvector47  ; /* vector 47 */
+ 2022 1509  a00FFA2 FDD0        vector46:  fdb    uvector46  ; /* vector 46 */
+ 2023 1510  a00FFA4 FDD2        vector45:  fdb    uvector45  ; /* vector 45 */
+ 2024 1511  a00FFA6 FDD4        vector44:  fdb    uvector44  ; /* vector 44 */
+ 2025 1512  a00FFA8 FDD6        vector43:  fdb    uvector43  ; /* vector 43 */
+ 2026 1513  a00FFAA FDD8        vector42:  fdb    uvector42  ; /* vector 42 */
+ 2027 1514  a00FFAC FDDA        vector41:  fdb    uvector41  ; /* vector 41 */
+ 2028 1515  a00FFAE FDDC        vector40:  fdb    uvector40  ; /* vector 40 */
+ 2029 1516  a00FFB0 FDDE        vector39:  fdb    uvector39  ; /* vector 39 */
+ 2030 1517  a00FFB2 FDE0        vector38:  fdb    uvector38  ; /* vector 38 */
+ 2031 1518  a00FFB4 FDE2        vector37:  fdb    uvector37  ; /* vector 37 */
+ 2032 1519  a00FFB6 FDE4        vector36:  fdb    uvector36  ; /* vector 36 */
+ 2033 1520  a00FFB8 FDE6        vector35:  fdb    uvector35  ; /* vector 35 */
+ 2034 1521  a00FFBA FDE8        vector34:  fdb    uvector34  ; /* vector 34 */
+ 2035 1522  a00FFBC FDEA        vector33:  fdb    uvector33  ; /* vector 33 */
+
+Metrowerks HC12-Assembler 
+(c) COPYRIGHT METROWERKS 1987-2003
+
+ Abs. Rel.   Loc    Obj. code   Source line
+ ---- ----   ------ ---------   -----------
+ 2036 1523  a00FFBE FDEC        vector32:  fdb    uvector32  ; /* vector 32 */
+ 2037 1524  a00FFC0 FDEE        vector31:  fdb    uvector31  ; /* vector 31 */
+ 2038 1525  a00FFC2 FDF0        vector30:  fdb    uvector30  ; /* vector 30 */
+ 2039 1526  a00FFC4 FDF2        vector29:  fdb    uvector29  ; /* vector 29 */
+ 2040 1527  a00FFC6 FDF4        vector28:  fdb    uvector28  ; /* vector 28 */
+ 2041 1528  a00FFC8 FDF6        vector27:  fdb    uvector27  ; /* vector 27 */
+ 2042 1529  a00FFCA FDF8        vector26:  fdb    uvector26  ; /* vector 26 */
+ 2043 1530  a00FFCC FDFA        vector25:  fdb    uvector25  ; /* vector 25 */
+ 2044 1531  a00FFCE FDFC        vector24:  fdb    uvector24  ; /* vector 24 */
+ 2045 1532  a00FFD0 FDFE        vector23:  fdb    uvector23  ; /* vector 23 */
+ 2046 1533  a00FFD2 FE00        vector22:  fdb    uvector22  ; /* vector 22 */
+ 2047 1534  a00FFD4 FE02        vector21:  fdb    uvector21  ; /* vector 21 */
+ 2048 1535  a00FFD6 F950        vector20:  fdb    SciIsr     ; /* vector 20 */
+ 2049 1536  a00FFD8 FE06        vector19:  fdb    uvector19  ; /* vector 19 */
+ 2050 1537  a00FFDA FE08        vector18:  fdb    uvector18  ; /* vector 18 */
+ 2051 1538  a00FFDC FE0A        vector17:  fdb    uvector17  ; /* vector 17 */
+ 2052 1539  a00FFDE FE0C        vector16:  fdb    uvector16  ; /* vector 16 */
+ 2053 1540  a00FFE0 FE0E        vector15:  fdb    uvector15  ; /* vector 15 */
+ 2054 1541  a00FFE2 FE10        vector14:  fdb    uvector14  ; /* vector 14 */
+ 2055 1542  a00FFE4 FE12        vector13:  fdb    uvector13  ; /* vector 13 */
+ 2056 1543  a00FFE6 FE14        vector12:  fdb    uvector12  ; /* vector 12 */
+ 2057 1544  a00FFE8 FE16        vector11:  fdb    uvector11  ; /* vector 11 */
+ 2058 1545  a00FFEA FE18        vector10:  fdb    uvector10  ; /* vector 10 */
+ 2059 1546  a00FFEC FE1A        vector09:  fdb    uvector09  ; /* vector 09 */
+ 2060 1547  a00FFEE FE1C        vector08:  fdb    uvector08  ; /* vector 08 */
+ 2061 1548  a00FFF0 FE1E        vector07:  fdb    uvector07  ; /* vector 07 */
+ 2062 1549  a00FFF2 FE20        vector06:  fdb    uvector06  ; /* vector 06 */
+ 2063 1550  a00FFF4 FE22        vector05:  fdb    uvector05  ; /* vector 05 */
+ 2064 1551  a00FFF6 F98B        vector04:  fdb    Breakpoint ; /* vector 04 */
+ 2065 1552  a00FFF8 FE26        vector03:  fdb    uvector03  ; /* vector 03 */
+ 2066 1553  a00FFFA F800        vector02:  fdb    ColdStart  ; /* vector 02 */
+ 2067 1554  a00FFFC FE2A        vector01:  fdb    uvector01  ; /* vector 01 */
+ 2068 1555  a00FFFE F800        vector00:  fdb    ColdStart  ; /* Reset vector */
+ 2069 1556                      
+ 2070 1557                      .nolist                      ;skip the symbol table
+ 2071 1558                      
+ 2072 1559                      ;*****************************************************************
+ 2073 1560                      
